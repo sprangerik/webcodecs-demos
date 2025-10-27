@@ -116,10 +116,7 @@
             <div>
                 <label for="codec">Codec:</label>
                 <select id="codec">
-                                    <option value="h264">H.264</option>
-                                    <option value="vp8">VP8</option>
-                                    <option value="vp9">VP9</option>
-                                    <option value="av1" selected>AV1</option>                </select>
+                </select>
             </div>
             <div>
                 <label for="bitrate">Bitrate (kbps):</label>
@@ -167,8 +164,56 @@
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
 
+        async function populateCodecList() {
+            const codecs = [
+                { name: 'H.264', codec: 'avc1.42001E', type: 'h264' },
+                { name: 'VP8', codec: 'vp8', type: 'vp8' },
+                { name: 'VP9', codec: 'vp09.00.10.08', type: 'vp9' },
+                { name: 'AV1', codec: 'av01.0.04M.08', type: 'av1' },
+            ];
+
+            for (const codecInfo of codecs) {
+                const baseConfig = {
+                    codec: codecInfo.codec,
+                    width: 640,
+                    height: 480,
+                };
+
+                // Check for hardware support
+                let hwConfig = { ...baseConfig, hardwareAcceleration: 'prefer-hardware' };
+                try {
+                    const hwSupport = await VideoEncoder.isConfigSupported(hwConfig);
+                    if (hwSupport.supported) {
+                        const option = document.createElement('option');
+                        option.value = `${codecInfo.type}-hw`;
+                        option.textContent = `${codecInfo.name} (HW)`;
+                        codecSelect.appendChild(option);
+                    }
+                } catch (e) { console.warn(`Error checking HW support for ${codecInfo.name}: ${e}`); }
+
+                // Check for software support
+                let swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' };
+                try {
+                    const swSupport = await VideoEncoder.isConfigSupported(swConfig);
+                    if (swSupport.supported) {
+                        const option = document.createElement('option');
+                        option.value = `${codecInfo.type}-sw`;
+                        option.textContent = `${codecInfo.name} (SW)`;
+                        codecSelect.appendChild(option);
+                    }
+                } catch (e) { console.warn(`Error checking SW support for ${codecInfo.name}: ${e}`); }
+            }
+
+            // Set default to AV1 if available
+            const av1Hw = codecSelect.querySelector('option[value="av1-hw"]');
+            const av1Sw = codecSelect.querySelector('option[value="av1-sw"]');
+            if (av1Hw) av1Hw.selected = true;
+            else if (av1Sw) av1Sw.selected = true;
+        }
+
         function getEncoderConfig() {
-            const codec = codecSelect.value;
+            const selectedOption = codecSelect.value;
+            const [type, accel] = selectedOption.split('-');
             const bitrate = parseInt(bitrateSlider.value) * 1000;
             const minQp = parseInt(minQpInput.value);
             const maxQp = parseInt(maxQpInput.value);
@@ -179,25 +224,28 @@
                 height: 480,
                 bitrate: bitrate,
                 framerate: framerate,
+                bitrateMode: "constant",
             };
 
-            switch (codec) {
+            if (accel === 'hw') {
+                encoderConfig.hardwareAcceleration = 'prefer-hardware';
+            } else if (accel === 'sw') {
+                encoderConfig.hardwareAcceleration = 'prefer-software';
+            }
+
+            switch (type) {
                 case 'h264':
                     encoderConfig.codec = 'avc1.42001E'; // Baseline profile
                     encoderConfig.avc = { format: 'annexb' };
-                    encoderConfig.bitrateMode = "constant";
                     break;
                 case 'vp8':
                     encoderConfig.codec = 'vp8';
-                    encoderConfig.bitrateMode = "constant";
                     break;
                 case 'vp9':
                     encoderConfig.codec = 'vp09.00.10.08';
-                    encoderConfig.bitrateMode = "constant";
                     break;
                 case 'av1':
                     encoderConfig.codec = 'av01.0.04M.08';
-                    encoderConfig.bitrateMode = "constant";
                     break;
             }
 
@@ -209,6 +257,22 @@
             }
 
             return encoderConfig;
+        }
+
+        function getDecoderConfig(encoderConfig) {
+            const decoderConfig = {
+                codec: encoderConfig.codec,
+                codedWidth: 640,
+                codedHeight: 480
+            };
+
+            if (encoderConfig.codec.startsWith('avc1')) {
+                decoderConfig.avc = { format: 'annexb' };
+                // Force software decoding for H.264 due to potential SW/HW interop issues
+                decoderConfig.hardwareAcceleration = 'prefer-software';
+                console.log('Forcing software decode for H.264');
+            }
+            return decoderConfig;
         }
 
         async function startEncoding() {
@@ -244,11 +308,7 @@
                 }
             });
 
-            const decoderConfig = {
-                codec: encoderConfig.codec,
-                codedWidth: 640,
-                codedHeight: 480
-            };
+            const decoderConfig = getDecoderConfig(encoderConfig);
             await decoder.configure(decoderConfig);
 
             const reader = frameSource.getReader();
@@ -301,11 +361,7 @@
                 if (encoderConfig.codec !== lastConfiguredCodec) {
                     console.log('Codec changed, reconfiguring decoder and requesting key frame');
                     lastConfiguredCodec = encoderConfig.codec;
-                    const decoderConfig = {
-                        codec: encoderConfig.codec,
-                        codedWidth: 640,
-                        codedHeight: 480
-                    };
+                    const decoderConfig = getDecoderConfig(encoderConfig);
                     await decoder.configure(decoderConfig);
                     needsKeyFrame = true; // Request a key frame from the encoder
                 }
@@ -346,6 +402,8 @@
             }
             startButton.disabled = false;
         });
+
+        window.addEventListener('load', populateCodecList);
     </script>
 </body>
 </html>
