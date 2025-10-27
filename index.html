@@ -149,12 +149,7 @@
                 <span id="bitrateValue">500 kbps</span>
             </div>
             <div>
-                <label for="minQp">Min QP:</label>
-                <input type="number" id="minQp" placeholder="Optional">
-            </div>
-            <div>
-                <label for="maxQp">Max QP:</label>
-                <input type="number" id="maxQp" placeholder="Optional">
+                <button id="requestKeyframeButton">Request Keyframe</button>
             </div>
         </div>
 
@@ -186,8 +181,7 @@
         const codecSelect = document.getElementById('codec');
         const bitrateSlider = document.getElementById('bitrate');
         const bitrateValue = document.getElementById('bitrateValue');
-        const minQpInput = document.getElementById('minQp');
-        const maxQpInput = document.getElementById('maxQp');
+        const requestKeyframeButton = document.getElementById('requestKeyframeButton');
         const graphCanvas = document.getElementById('bitrateGraph');
         const graphCtx = graphCanvas.getContext('2d');
 
@@ -336,8 +330,6 @@
             const selectedOption = codecSelect.value;
             const [type, accel] = selectedOption.split('-');
             const bitrate = parseInt(bitrateSlider.value) * 1000;
-            const minQp = parseInt(minQpInput.value);
-            const maxQp = parseInt(maxQpInput.value);
 
             let encoderConfig = {
                 codec: '',
@@ -369,14 +361,6 @@
                     encoderConfig.codec = 'av01.0.04M.08';
                     break;
             }
-
-            // Add QP settings if provided
-            if (!isNaN(minQp) && !isNaN(maxQp)) {
-                // Note: QP control is not standardized across codecs in WebCodecs yet
-                // This is a placeholder for future API improvements.
-                console.warn("QP settings are not fully supported by all codecs in WebCodecs.");
-            }
-
             return encoderConfig;
         }
 
@@ -522,8 +506,12 @@
             reconfigureRtc();
         });
         codecSelect.addEventListener('change', reconfigureRtc);
-        minQpInput.addEventListener('input', reconfigureRtc);
-        maxQpInput.addEventListener('input', reconfigureRtc);
+        requestKeyframeButton.addEventListener('click', () => {
+            if (encoder && encoder.state === 'configured') {
+                needsKeyFrame = true;
+                console.log("Keyframe requested");
+            }
+        });
 
         startButton.addEventListener('click', async () => {
             startButton.disabled = true;
