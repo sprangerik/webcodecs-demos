@@ -24,9 +24,13 @@
             border: 1px solid #ccc;
             background-color: #000;
         }
-        canvas {
+        #decodedCanvas {
             border: 1px solid #ccc;
             background-color: #000;
+        }
+        #bitrateGraph {
+            border: 1px solid #ccc;
+            background-color: #fff;
         }
         #rawVideo {
             transform: scaleX(-1);
@@ -75,11 +79,32 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             width: 48%;
-            height: 300px; /* Adjusted height */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #333;
+        }
+        .graph h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #0056b3;
+        }
+        .graph-legend {
             display: flex;
             justify-content: center;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        .legend-item {
+            margin: 0 10px;
+            display: flex;
             align-items: center;
-            color: #999;
+        }
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            margin-right: 5px;
+            border: 1px solid #ccc;
         }
         .controls {
             text-align: center;
@@ -134,7 +159,16 @@
         </div>
 
         <div class="graph">
-            Graph Area
+            <h3>Encoded Bitrate</h3>
+            <canvas id="bitrateGraph" width="600" height="350"></canvas>
+            <div class="graph-legend">
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: blue;"></span> Target
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: red;"></span> Actual
+                </div>
+            </div>
         </div>
     </div>
 
@@ -154,6 +188,8 @@
         const bitrateValue = document.getElementById('bitrateValue');
         const minQpInput = document.getElementById('minQp');
         const maxQpInput = document.getElementById('maxQp');
+        const graphCanvas = document.getElementById('bitrateGraph');
+        const graphCtx = graphCanvas.getContext('2d');
 
         let mediaStream = null;
         let encoder = null;
@@ -163,6 +199,14 @@
         const framerate = 30;
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
+
+        // Graph variables
+        let graphData = [];
+        const maxGraphPoints = 120; // Show last 24 seconds
+        let lastBitrateCalcTime = performance.now();
+        let bytesSentInInterval = 0;
+        let graphIntervalId = null;
+        const graphUpdateInterval = 200; // ms
 
         async function populateCodecList() {
             const codecs = [
@@ -209,6 +253,83 @@
             const av1Sw = codecSelect.querySelector('option[value="av1-sw"]');
             if (av1Hw) av1Hw.selected = true;
             else if (av1Sw) av1Sw.selected = true;
+        }
+
+        function drawGraph() {
+            const width = graphCanvas.width;
+            const height = graphCanvas.height;
+            graphCtx.clearRect(0, 0, width, height);
+
+            if (graphData.length === 0) return;
+
+            const paddingLeft = 70;
+            const paddingRight = 10;
+            const paddingTop = 10;
+            const paddingBottom = 20;
+            const graphHeight = height - paddingTop - paddingBottom;
+            const graphWidth = width - paddingLeft - paddingRight;
+
+            // Styles
+            graphCtx.strokeStyle = '#ccc';
+            graphCtx.lineWidth = 1;
+            graphCtx.font = '12px sans-serif';
+            graphCtx.fillStyle = '#333';
+            graphCtx.textAlign = "right";
+
+            // Find max bitrate for Y-axis scaling
+            let maxBitrate = 500000; // Min scale of 500 kbps
+            graphData.forEach(p => {
+                maxBitrate = Math.max(maxBitrate, p.target, p.actual);
+            });
+            maxBitrate = Math.ceil(maxBitrate / 500000) * 500000; // Round up to next 500 kbps
+
+            const scaleY = graphHeight / maxBitrate;
+            const scaleX = graphWidth / (maxGraphPoints - 1);
+
+            // Draw Y-axis labels and grid lines
+            const yLabelCount = 5;
+            for (let i = 0; i <= yLabelCount; i++) {
+                const val = (maxBitrate / yLabelCount) * i;
+                const y = paddingTop + graphHeight - val * scaleY;
+                graphCtx.fillText(`${(val / 1000).toFixed(0)} kbps`, paddingLeft - 10, y + 4);
+                graphCtx.beginPath();
+                graphCtx.moveTo(paddingLeft, y);
+                graphCtx.lineTo(width - paddingRight, y);
+                graphCtx.stroke();
+            }
+
+            // Draw X-axis (time)
+            graphCtx.beginPath();
+            graphCtx.moveTo(paddingLeft, height - paddingBottom);
+            graphCtx.lineTo(width - paddingRight, height - paddingBottom);
+            graphCtx.stroke();
+
+            const plotX = (index) => paddingLeft + index * scaleX;
+            const plotY = (bitrate) => paddingTop + graphHeight - bitrate * scaleY;
+
+            // Plot Target Bitrate
+            graphCtx.beginPath();
+            graphCtx.strokeStyle = 'blue';
+            graphCtx.lineWidth = 2;
+            graphData.forEach((point, index) => {
+                const x = plotX(index);
+                const y = plotY(point.target);
+                if (index === 0) graphCtx.moveTo(x, y);
+                else graphCtx.lineTo(x, y);
+            });
+            graphCtx.stroke();
+
+            // Plot Actual Bitrate
+            graphCtx.beginPath();
+            graphCtx.strokeStyle = 'red';
+            graphCtx.lineWidth = 2;
+            graphData.forEach((point, index) => {
+                const x = plotX(index);
+                const y = plotY(point.actual);
+                if (index === 0) graphCtx.moveTo(x, y);
+                else graphCtx.lineTo(x, y);
+            });
+            graphCtx.stroke();
         }
 
         function getEncoderConfig() {
@@ -288,6 +409,7 @@
             lastConfiguredCodec = encoderConfig.codec;
             encoder = new VideoEncoder({
                 output: (chunk, meta) => {
+                    bytesSentInInterval += chunk.byteLength;
                     if (decoder.state === 'configured') {
                         decoder.decode(chunk);
                     }
@@ -312,6 +434,29 @@
             await decoder.configure(decoderConfig);
 
             const reader = frameSource.getReader();
+
+            // Start graph updates
+            bytesSentInInterval = 0;
+            lastBitrateCalcTime = performance.now();
+            graphData = [];
+            if (graphIntervalId) clearInterval(graphIntervalId);
+            graphIntervalId = setInterval(() => {
+                const now = performance.now();
+                const timeDelta = (now - lastBitrateCalcTime) / 1000; // seconds
+                if (timeDelta === 0) return;
+
+                const actualBitrate = (bytesSentInInterval * 8) / timeDelta;
+                const targetBitrate = parseInt(bitrateSlider.value) * 1000;
+
+                graphData.push({ time: now, target: targetBitrate, actual: actualBitrate });
+                if (graphData.length > maxGraphPoints) {
+                    graphData.shift();
+                }
+
+                bytesSentInInterval = 0;
+                lastBitrateCalcTime = now;
+                drawGraph();
+            }, graphUpdateInterval);
 
             function processFrame() {
                 reader.read().then(({ done, value }) => {
@@ -351,6 +496,10 @@
                 decoder = null;
             }
             decodedCtx.clearRect(0, 0, decodedCanvas.width, decodedCanvas.height);
+            if (graphIntervalId) {
+                clearInterval(graphIntervalId);
+                graphIntervalId = null;
+            }
         }
 
         async function reconfigureRtc() {
