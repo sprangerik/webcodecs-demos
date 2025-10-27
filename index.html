@@ -139,6 +139,13 @@
         <div class="settings">
             <h2>Settings</h2>
             <div>
+                <label for="rateControlMode">Rate Control:</label>
+                <select id="rateControlMode">
+                    <option value="internal" selected>Internal</option>
+                    <option value="external">External</option>
+                </select>
+            </div>
+            <div>
                 <label for="codec">Codec:</label>
                 <select id="codec">
                 </select>
@@ -147,6 +154,16 @@
                 <label for="bitrate">Bitrate (kbps):</label>
                 <input type="range" id="bitrate" min="100" max="2500" value="500">
                 <span id="bitrateValue">500 kbps</span>
+            </div>
+            <div id="externalRcSettings" style="display: none;">
+                <div>
+                    <label for="minQp">Min QP:</label>
+                    <input type="number" id="minQp" value="10">
+                </div>
+                <div>
+                    <label for="maxQp">Max QP:</label>
+                    <input type="number" id="maxQp" value="50">
+                </div>
             </div>
             <div>
                 <button id="requestKeyframeButton">Request Keyframe</button>
@@ -172,15 +189,20 @@
         <button id="stopButton" disabled>Stop Demo</button>
     </div>
 
+    <script src="simple_rate_controller.js"></script>
     <script>
         const rawVideo = document.getElementById('rawVideo');
         const decodedCanvas = document.getElementById('decodedCanvas');
         const decodedCtx = decodedCanvas.getContext('2d');
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
+        const rateControlModeSelect = document.getElementById('rateControlMode');
         const codecSelect = document.getElementById('codec');
         const bitrateSlider = document.getElementById('bitrate');
         const bitrateValue = document.getElementById('bitrateValue');
+        const externalRcSettingsDiv = document.getElementById('externalRcSettings');
+        const minQpInput = document.getElementById('minQp');
+        const maxQpInput = document.getElementById('maxQp');
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
         const graphCanvas = document.getElementById('bitrateGraph');
         const graphCtx = graphCanvas.getContext('2d');
@@ -193,6 +215,7 @@
         const framerate = 30;
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
+        let rateController = null;
 
         // Graph variables
         let graphData = [];
@@ -202,9 +225,11 @@
         let graphIntervalId = null;
         const graphUpdateInterval = 200; // ms
 
-        async function populateCodecList() {
+        async function populateCodecList(bitrateMode = "constant") {
+            codecSelect.innerHTML = ''; // Clear existing options
             const codecs = [
-                { name: 'H.264', codec: 'avc1.42001E', type: 'h264' },
+                { name: 'H.264', codec: 'avc1.42001E', type: 'avc' },
+                { name: 'H.265', codec: 'hev1.1.6.L93.B0', type: 'hevc' },
                 { name: 'VP8', codec: 'vp8', type: 'vp8' },
                 { name: 'VP9', codec: 'vp09.00.10.08', type: 'vp9' },
                 { name: 'AV1', codec: 'av01.0.04M.08', type: 'av1' },
@@ -215,7 +240,11 @@
                     codec: codecInfo.codec,
                     width: 640,
                     height: 480,
+                    bitrateMode: bitrateMode,
                 };
+                if (bitrateMode === 'constant') {
+                    baseConfig.bitrate = 500000;
+                }
 
                 // Check for hardware support
                 let hwConfig = { ...baseConfig, hardwareAcceleration: 'prefer-hardware' };
@@ -227,7 +256,7 @@
                         option.textContent = `${codecInfo.name} (HW)`;
                         codecSelect.appendChild(option);
                     }
-                } catch (e) { console.warn(`Error checking HW support for ${codecInfo.name}: ${e}`); }
+                } catch (e) { console.warn(`Error checking HW support for ${codecInfo.name} (${bitrateMode}): ${e}`); }
 
                 // Check for software support
                 let swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' };
@@ -239,7 +268,7 @@
                         option.textContent = `${codecInfo.name} (SW)`;
                         codecSelect.appendChild(option);
                     }
-                } catch (e) { console.warn(`Error checking SW support for ${codecInfo.name}: ${e}`); }
+                } catch (e) { console.warn(`Error checking SW support for ${codecInfo.name} (${bitrateMode}): ${e}`); }
             }
 
             // Set default to AV1 if available
@@ -327,18 +356,24 @@
         }
 
         function getEncoderConfig() {
-            const selectedOption = codecSelect.value;
-            const [type, accel] = selectedOption.split('-');
+            const selectedCodecOption = codecSelect.value;
+            const [type, accel] = selectedCodecOption.split('-');
             const bitrate = parseInt(bitrateSlider.value) * 1000;
+            const rcMode = rateControlModeSelect.value;
 
             let encoderConfig = {
                 codec: '',
                 width: 640,
                 height: 480,
-                bitrate: bitrate,
                 framerate: framerate,
-                bitrateMode: "constant",
             };
+
+            if (rcMode === 'internal') {
+                encoderConfig.bitrate = bitrate;
+                encoderConfig.bitrateMode = "constant";
+            } else { // external
+                encoderConfig.bitrateMode = "quantizer";
+            }
 
             if (accel === 'hw') {
                 encoderConfig.hardwareAcceleration = 'prefer-hardware';
@@ -347,9 +382,13 @@
             }
 
             switch (type) {
-                case 'h264':
+                case 'avc':
                     encoderConfig.codec = 'avc1.42001E'; // Baseline profile
                     encoderConfig.avc = { format: 'annexb' };
+                    break;
+                case 'hevc':
+                    encoderConfig.codec = 'hev1.1.6.L93.B0';
+                    // encoderConfig.hevc = { format: 'annexb' }; // HEVC often uses annexb too
                     break;
                 case 'vp8':
                     encoderConfig.codec = 'vp8';
@@ -373,17 +412,32 @@
 
             if (encoderConfig.codec.startsWith('avc1')) {
                 decoderConfig.avc = { format: 'annexb' };
-                // Force software decoding for H.264 due to potential SW/HW interop issues
                 decoderConfig.hardwareAcceleration = 'prefer-software';
                 console.log('Forcing software decode for H.264');
             }
             return decoderConfig;
         }
 
-        async function startEncoding() {
-            if (!mediaStream) {
-                return;
+        function updateRateController() {
+            if (rateControlModeSelect.value === 'external') {
+                const codecType = codecSelect.value.split('-')[0];
+                const minQp = parseInt(minQpInput.value);
+                const maxQp = parseInt(maxQpInput.value);
+                const targetBitrate = parseInt(bitrateSlider.value) * 1000;
+                if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
+                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate);
+                } else {
+                    rateController.SetTargetRate(targetBitrate);
+                }
+            } else {
+                rateController = null;
             }
+        }
+
+        async function startEncoding() {
+            if (!mediaStream) return;
+
+            updateRateController();
 
             const track = mediaStream.getVideoTracks()[0];
             const processor = new MediaStreamTrackProcessor({ track: track });
@@ -396,6 +450,9 @@
                     bytesSentInInterval += chunk.byteLength;
                     if (decoder.state === 'configured') {
                         decoder.decode(chunk);
+                    }
+                    if (rateController && meta.decoderBuffer) {
+                         rateController.OnEncodedFrame(meta.decoderBuffer.timestamp, chunk.byteLength);
                     }
                 },
                 error: (e) => {
@@ -419,14 +476,13 @@
 
             const reader = frameSource.getReader();
 
-            // Start graph updates
             bytesSentInInterval = 0;
             lastBitrateCalcTime = performance.now();
             graphData = [];
             if (graphIntervalId) clearInterval(graphIntervalId);
             graphIntervalId = setInterval(() => {
                 const now = performance.now();
-                const timeDelta = (now - lastBitrateCalcTime) / 1000; // seconds
+                const timeDelta = (now - lastBitrateCalcTime) / 1000;
                 if (timeDelta === 0) return;
 
                 const actualBitrate = (bytesSentInInterval * 8) / timeDelta;
@@ -442,21 +498,31 @@
                 drawGraph();
             }, graphUpdateInterval);
 
+            let frameCounter = 0;
             function processFrame() {
                 reader.read().then(({ done, value }) => {
-                    if (done) {
-                        return;
-                    }
+                    if (done) return;
 
                     const frame = value;
                     if (encoder.state === 'configured') {
                         const encodeOptions = { keyFrame: needsKeyFrame };
+                        if (rateController) {
+                            const nextQp = rateController.GetNextQp();
+                            const codecType = codecSelect.value.split('-')[0];
+                            switch (codecType) {
+                                case 'av1': encodeOptions.av1 = { quantizer: nextQp }; break;
+                                case 'vp9': encodeOptions.vp9 = { quantizer: nextQp }; break;
+                                case 'vp8': encodeOptions.vp8 = { quantizer: nextQp }; break;
+                                case 'avc': encodeOptions.avc = { quantizer: nextQp }; break;
+                                case 'hevc': encodeOptions.hevc = { quantizer: nextQp }; break;
+                            }
+                        }
                         encoder.encode(frame, encodeOptions);
                         if (needsKeyFrame) needsKeyFrame = false;
                     }
                     frame.close();
 
-                    if (stopButton.disabled === false) {
+                    if (!stopButton.disabled) {
                         requestAnimationFrame(processFrame);
                     }
                 }).catch(e => {
@@ -468,7 +534,6 @@
 
         function stopEncoding() {
             if (frameSource) {
-                // frameSource.cancel(); // This seems to cause issues, rely on track.stop()
                 frameSource = null;
             }
             if (encoder && encoder.state !== 'closed') {
@@ -484,28 +549,54 @@
                 clearInterval(graphIntervalId);
                 graphIntervalId = null;
             }
+            rateController = null;
         }
 
         async function reconfigureRtc() {
-            if (encoder && encoder.state === 'configured' && decoder && decoder.state === 'configured') {
-                const encoderConfig = getEncoderConfig();
-                await encoder.configure(encoderConfig);
+            if (!encoder || encoder.state !== 'configured' || !decoder || decoder.state !== 'configured') {
+                return;
+            }
 
-                if (encoderConfig.codec !== lastConfiguredCodec) {
-                    console.log('Codec changed, reconfiguring decoder and requesting key frame');
-                    lastConfiguredCodec = encoderConfig.codec;
-                    const decoderConfig = getDecoderConfig(encoderConfig);
-                    await decoder.configure(decoderConfig);
-                    needsKeyFrame = true; // Request a key frame from the encoder
-                }
+            updateRateController();
+            const encoderConfig = getEncoderConfig();
+            await encoder.configure(encoderConfig);
+
+            if (encoderConfig.codec !== lastConfiguredCodec) {
+                console.log('Codec changed, reconfiguring decoder and requesting key frame');
+                lastConfiguredCodec = encoderConfig.codec;
+                const decoderConfig = getDecoderConfig(encoderConfig);
+                await decoder.configure(decoderConfig);
+                needsKeyFrame = true;
             }
         }
 
-        bitrateSlider.addEventListener('input', () => {
-            bitrateValue.textContent = bitrateSlider.value + ' kbps';
+        rateControlModeSelect.addEventListener('change', async () => {
+            const mode = rateControlModeSelect.value;
+            if (mode === 'external') {
+                externalRcSettingsDiv.style.display = 'block';
+                await populateCodecList("quantizer");
+            } else {
+                externalRcSettingsDiv.style.display = 'none';
+                await populateCodecList("constant");
+            }
             reconfigureRtc();
         });
+
+        bitrateSlider.addEventListener('input', () => {
+            bitrateValue.textContent = bitrateSlider.value + ' kbps';
+            if (rateController) {
+                rateController.SetTargetRate(parseInt(bitrateSlider.value) * 1000);
+            }
+            // Reconfigure for internal mode to update bitrate
+            if (rateControlModeSelect.value === 'internal') {
+                 reconfigureRtc();
+            }
+        });
+
         codecSelect.addEventListener('change', reconfigureRtc);
+        minQpInput.addEventListener('input', updateRateController);
+        maxQpInput.addEventListener('input', updateRateController);
+
         requestKeyframeButton.addEventListener('click', () => {
             if (encoder && encoder.state === 'configured') {
                 needsKeyFrame = true;
@@ -540,7 +631,7 @@
             startButton.disabled = false;
         });
 
-        window.addEventListener('load', populateCodecList);
+        window.addEventListener('load', () => populateCodecList("constant"));
     </script>
 </body>
 </html>
