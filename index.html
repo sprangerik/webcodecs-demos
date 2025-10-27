@@ -69,9 +69,8 @@
         .settings input[type="range"] {
             margin-right: 10px;
         }
-        .settings #bitrateValue {
-            width: 80px;
-            text-align: right;
+        .settings input[type="number"].invalid {
+            border-color: red;
         }
         .graph {
             background-color: #fff;
@@ -418,16 +417,66 @@
             return decoderConfig;
         }
 
+        function getQpRange(codecType) {
+            if (codecType === 'avc' || codecType === 'hevc') {
+                return { min: 0, max: 51 };
+            }
+            return { min: 0, max: 63 }; // VPx, AV1
+        }
+
+        function updateQpInputDefaults() {
+            const codecType = codecSelect.value.split('-')[0];
+            const range = getQpRange(codecType);
+            minQpInput.value = range.min;
+            maxQpInput.value = range.max;
+            validateQpSettings();
+            updateRateController();
+        }
+
+        function validateQpSettings() {
+            const codecType = codecSelect.value.split('-')[0];
+            const range = getQpRange(codecType);
+            let minValid = range.min, maxValid = range.max;
+
+            const minQp = parseInt(minQpInput.value);
+            const maxQp = parseInt(maxQpInput.value);
+
+            let isValid = true;
+            minQpInput.classList.remove('invalid');
+            maxQpInput.classList.remove('invalid');
+
+            if (isNaN(minQp) || minQp < minValid || minQp > maxValid) {
+                minQpInput.classList.add('invalid');
+                isValid = false;
+            }
+            if (isNaN(maxQp) || maxQp < minValid || maxQp > maxValid) {
+                maxQpInput.classList.add('invalid');
+                isValid = false;
+            }
+            if (isValid && minQp > maxQp) {
+                minQpInput.classList.add('invalid');
+                maxQpInput.classList.add('invalid');
+                isValid = false;
+            }
+            return isValid;
+        }
+
         function updateRateController() {
             if (rateControlModeSelect.value === 'external') {
+                if (!validateQpSettings()) {
+                    rateController = null;
+                    return;
+                }
                 const codecType = codecSelect.value.split('-')[0];
                 const minQp = parseInt(minQpInput.value);
                 const maxQp = parseInt(maxQpInput.value);
                 const targetBitrate = parseInt(bitrateSlider.value) * 1000;
+                const now = performance.now();
+
                 if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
-                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate);
+                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now);
                 } else {
-                    rateController.SetTargetRate(targetBitrate);
+                    rateController.SetRates(targetBitrate, framerate, now);
                 }
             } else {
                 rateController = null;
@@ -451,8 +500,8 @@
                     if (decoder.state === 'configured') {
                         decoder.decode(chunk);
                     }
-                    if (rateController && meta.decoderBuffer) {
-                         rateController.OnEncodedFrame(meta.decoderBuffer.timestamp, chunk.byteLength);
+                    if (rateController) {
+                         rateController.OnEncodedFrame(performance.now(), chunk.byteLength, chunk.type === 'key');
                     }
                 },
                 error: (e) => {
@@ -507,7 +556,7 @@
                     if (encoder.state === 'configured') {
                         const encodeOptions = { keyFrame: needsKeyFrame };
                         if (rateController) {
-                            const nextQp = rateController.GetNextQp();
+                            const nextQp = rateController.GetNextQp(performance.now(), needsKeyFrame);
                             const codecType = codecSelect.value.split('-')[0];
                             switch (codecType) {
                                 case 'av1': encodeOptions.av1 = { quantizer: nextQp }; break;
@@ -575,9 +624,12 @@
             if (mode === 'external') {
                 externalRcSettingsDiv.style.display = 'block';
                 await populateCodecList("quantizer");
+                updateQpInputDefaults();
             } else {
                 externalRcSettingsDiv.style.display = 'none';
                 await populateCodecList("constant");
+                minQpInput.classList.remove('invalid');
+                maxQpInput.classList.remove('invalid');
             }
             reconfigureRtc();
         });
@@ -585,7 +637,7 @@
         bitrateSlider.addEventListener('input', () => {
             bitrateValue.textContent = bitrateSlider.value + ' kbps';
             if (rateController) {
-                rateController.SetTargetRate(parseInt(bitrateSlider.value) * 1000);
+                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, performance.now());
             }
             // Reconfigure for internal mode to update bitrate
             if (rateControlModeSelect.value === 'internal') {
@@ -593,9 +645,21 @@
             }
         });
 
-        codecSelect.addEventListener('change', reconfigureRtc);
-        minQpInput.addEventListener('input', updateRateController);
-        maxQpInput.addEventListener('input', updateRateController);
+        codecSelect.addEventListener('change', () => {
+            if (rateControlModeSelect.value === 'external') {
+                updateQpInputDefaults();
+            } else {
+                reconfigureRtc();
+            }
+        });
+        minQpInput.addEventListener('input', () => {
+            validateQpSettings();
+            updateRateController();
+        });
+        maxQpInput.addEventListener('input', () => {
+            validateQpSettings();
+            updateRateController();
+        });
 
         requestKeyframeButton.addEventListener('click', () => {
             if (encoder && encoder.state === 'configured') {
