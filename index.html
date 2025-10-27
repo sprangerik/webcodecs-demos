@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebCodecs Rate Control Demo</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        h1 {
+            text-align: center;
+            color: #0056b3;
+        }
+        .videos {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+        video {
+            border: 1px solid #ccc;
+            background-color: #000;
+        }
+        canvas {
+            border: 1px solid #ccc;
+            background-color: #000;
+        }
+        #rawVideo {
+            transform: scaleX(-1);
+        }
+        .layout-container {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+        .settings {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            width: 48%;
+        }
+        .settings h2 {
+            margin-top: 0;
+            color: #0056b3;
+        }
+        .settings > div {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+        }
+        .settings label {
+            margin-right: 10px;
+            width: 120px;
+        }
+        .settings select, .settings input[type="range"], .settings input[type="number"] {
+            flex-grow: 1;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .settings input[type="range"] {
+            margin-right: 10px;
+        }
+        .settings #bitrateValue {
+            width: 80px;
+            text-align: right;
+        }
+        .graph {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            width: 48%;
+            height: 300px; /* Adjusted height */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #999;
+        }
+        .controls {
+            text-align: center;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 1em;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebCodecs Rate Control Demo</h1>
+
+    <div class="videos">
+        <video id="rawVideo" width="640" height="480" autoplay muted playsinline></video>
+        <canvas id="decodedCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="layout-container">
+        <div class="settings">
+            <h2>Settings</h2>
+            <div>
+                <label for="codec">Codec:</label>
+                <select id="codec">
+                                    <option value="h264">H.264</option>
+                                    <option value="vp8">VP8</option>
+                                    <option value="vp9">VP9</option>
+                                    <option value="av1" selected>AV1</option>                </select>
+            </div>
+            <div>
+                <label for="bitrate">Bitrate (kbps):</label>
+                <input type="range" id="bitrate" min="100" max="2500" value="500">
+                <span id="bitrateValue">500 kbps</span>
+            </div>
+            <div>
+                <label for="minQp">Min QP:</label>
+                <input type="number" id="minQp" placeholder="Optional">
+            </div>
+            <div>
+                <label for="maxQp">Max QP:</label>
+                <input type="number" id="maxQp" placeholder="Optional">
+            </div>
+        </div>
+
+        <div class="graph">
+            Graph Area
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="startButton">Start Demo</button>
+        <button id="stopButton" disabled>Stop Demo</button>
+    </div>
+
+    <script>
+        const rawVideo = document.getElementById('rawVideo');
+        const decodedCanvas = document.getElementById('decodedCanvas');
+        const decodedCtx = decodedCanvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const codecSelect = document.getElementById('codec');
+        const bitrateSlider = document.getElementById('bitrate');
+        const bitrateValue = document.getElementById('bitrateValue');
+        const minQpInput = document.getElementById('minQp');
+        const maxQpInput = document.getElementById('maxQp');
+
+        let mediaStream = null;
+        let encoder = null;
+        let decoder = null;
+        let frameSource = null;
+        let frameCount = 0;
+        const framerate = 30;
+        let lastConfiguredCodec = '';
+        let needsKeyFrame = false;
+
+        function getEncoderConfig() {
+            const codec = codecSelect.value;
+            const bitrate = parseInt(bitrateSlider.value) * 1000;
+            const minQp = parseInt(minQpInput.value);
+            const maxQp = parseInt(maxQpInput.value);
+
+            let encoderConfig = {
+                codec: '',
+                width: 640,
+                height: 480,
+                bitrate: bitrate,
+                framerate: framerate,
+            };
+
+            switch (codec) {
+                case 'h264':
+                    encoderConfig.codec = 'avc1.42001E'; // Baseline profile
+                    encoderConfig.avc = { format: 'annexb' };
+                    encoderConfig.bitrateMode = "constant";
+                    break;
+                case 'vp8':
+                    encoderConfig.codec = 'vp8';
+                    encoderConfig.bitrateMode = "constant";
+                    break;
+                case 'vp9':
+                    encoderConfig.codec = 'vp09.00.10.08';
+                    encoderConfig.bitrateMode = "constant";
+                    break;
+                case 'av1':
+                    encoderConfig.codec = 'av01.0.04M.08';
+                    encoderConfig.bitrateMode = "constant";
+                    break;
+            }
+
+            // Add QP settings if provided
+            if (!isNaN(minQp) && !isNaN(maxQp)) {
+                // Note: QP control is not standardized across codecs in WebCodecs yet
+                // This is a placeholder for future API improvements.
+                console.warn("QP settings are not fully supported by all codecs in WebCodecs.");
+            }
+
+            return encoderConfig;
+        }
+
+        async function startEncoding() {
+            if (!mediaStream) {
+                return;
+            }
+
+            const track = mediaStream.getVideoTracks()[0];
+            const processor = new MediaStreamTrackProcessor({ track: track });
+            frameSource = processor.readable;
+
+            const encoderConfig = getEncoderConfig();
+            lastConfiguredCodec = encoderConfig.codec;
+            encoder = new VideoEncoder({
+                output: (chunk, meta) => {
+                    if (decoder.state === 'configured') {
+                        decoder.decode(chunk);
+                    }
+                },
+                error: (e) => {
+                    console.error('Encoder Error:', e);
+                }
+            });
+            await encoder.configure(encoderConfig);
+
+            decoder = new VideoDecoder({
+                output: (frame) => {
+                    decodedCtx.drawImage(frame, 0, 0, 640, 480);
+                    frame.close();
+                },
+                error: (e) => {
+                    console.error('Decoder Error:', e);
+                }
+            });
+
+            const decoderConfig = {
+                codec: encoderConfig.codec,
+                codedWidth: 640,
+                codedHeight: 480
+            };
+            await decoder.configure(decoderConfig);
+
+            const reader = frameSource.getReader();
+
+            function processFrame() {
+                reader.read().then(({ done, value }) => {
+                    if (done) {
+                        return;
+                    }
+
+                    const frame = value;
+                    if (encoder.state === 'configured') {
+                        const encodeOptions = { keyFrame: needsKeyFrame };
+                        encoder.encode(frame, encodeOptions);
+                        if (needsKeyFrame) needsKeyFrame = false;
+                    }
+                    frame.close();
+
+                    if (stopButton.disabled === false) {
+                        requestAnimationFrame(processFrame);
+                    }
+                }).catch(e => {
+                    console.error("Error reading frame:", e);
+                });
+            }
+            requestAnimationFrame(processFrame);
+        }
+
+        function stopEncoding() {
+            if (frameSource) {
+                // frameSource.cancel(); // This seems to cause issues, rely on track.stop()
+                frameSource = null;
+            }
+            if (encoder && encoder.state !== 'closed') {
+                encoder.close();
+                encoder = null;
+            }
+            if (decoder && decoder.state !== 'closed') {
+                decoder.close();
+                decoder = null;
+            }
+            decodedCtx.clearRect(0, 0, decodedCanvas.width, decodedCanvas.height);
+        }
+
+        async function reconfigureRtc() {
+            if (encoder && encoder.state === 'configured' && decoder && decoder.state === 'configured') {
+                const encoderConfig = getEncoderConfig();
+                await encoder.configure(encoderConfig);
+
+                if (encoderConfig.codec !== lastConfiguredCodec) {
+                    console.log('Codec changed, reconfiguring decoder and requesting key frame');
+                    lastConfiguredCodec = encoderConfig.codec;
+                    const decoderConfig = {
+                        codec: encoderConfig.codec,
+                        codedWidth: 640,
+                        codedHeight: 480
+                    };
+                    await decoder.configure(decoderConfig);
+                    needsKeyFrame = true; // Request a key frame from the encoder
+                }
+            }
+        }
+
+        bitrateSlider.addEventListener('input', () => {
+            bitrateValue.textContent = bitrateSlider.value + ' kbps';
+            reconfigureRtc();
+        });
+        codecSelect.addEventListener('change', reconfigureRtc);
+        minQpInput.addEventListener('input', reconfigureRtc);
+        maxQpInput.addEventListener('input', reconfigureRtc);
+
+        startButton.addEventListener('click', async () => {
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+                rawVideo.srcObject = mediaStream;
+                await rawVideo.play();
+                stopButton.disabled = false;
+                startEncoding();
+            } catch (err) {
+                console.error("Error accessing camera: ", err);
+                alert("Could not access camera. Please ensure permission is granted.");
+                startButton.disabled = false;
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            stopButton.disabled = true;
+            stopEncoding();
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+                rawVideo.srcObject = null;
+            }
+            startButton.disabled = false;
+        });
+    </script>
+</body>
+</html>
