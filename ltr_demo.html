@@ -184,6 +184,7 @@
         This demo uses experimental WebCodecs features for manual reference frame control. It is currently best supported in Chromium-based browsers with the <code>chrome://flags/#enable-experimental-web-platform-features</code> flag enabled.
     </div>
 
+    <script src="ltr_reference_controller.js"></script>
     <script>
         const decodedCtx = decodedCanvas.getContext('2d');
         const startButton = document.getElementById('startButton');
@@ -203,7 +204,7 @@
         const framerate = 30;
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
-        let rateController = null;
+        let ltrController = null;
 
         // Graph variables
         let graphData = [];
@@ -441,15 +442,15 @@
                     if (decoder.state === 'configured') {
                         decoder.decode(chunk);
                     }
-                    if (rateController) {
-                         rateController.OnEncodedFrame(performance.now(), chunk.byteLength, chunk.type === 'key');
-                    }
                 },
                 error: (e) => {
                     console.error('Encoder Error:', e);
                 }
             });
             await encoder.configure(encoderConfig);
+
+            const buffers = encoder.getAllFrameBuffers();
+            ltrController = new LtrReferenceController(buffers);
 
             decoder = new VideoDecoder({
                 output: (frame) => {
@@ -494,13 +495,8 @@
                     if (done) return;
 
                     const frame = value;
-                    if (encoder.state === 'configured') {
-                        const buffers = encoder.getAllFrameBuffers();
-                        const encodeOptions = {
-                            keyFrame: needsKeyFrame,
-                            referenceBuffers: [buffers[0]],
-                            updateBuffer: buffers[0]
-                        };
+                    if (encoder.state === 'configured' && ltrController) {
+                        const encodeOptions = ltrController.GetNextEncodeOptions(needsKeyFrame);
                         encoder.encode(frame, encodeOptions);
                         if (needsKeyFrame) needsKeyFrame = false;
                     }
@@ -533,7 +529,7 @@
                 clearInterval(graphIntervalId);
                 graphIntervalId = null;
             }
-            rateController = null;
+            ltrController = null;
         }
 
         async function reconfigureRtc() {
