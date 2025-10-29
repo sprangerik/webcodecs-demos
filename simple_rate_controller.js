@@ -7,7 +7,15 @@ class SimpleRateController {
         this.framerate = initialFramerate;
         this.bitDebt = 0; // in bits
         this.lastBitrateUpdateTimestamp = timestamp;
-        this.currentQp = Math.round((this.minQp + this.maxQp) / 2);
+        this.currentQp = (this.minQp + this.maxQp) / 2; // Float QP
+
+        // PID coefficients
+        this.Kp = 0.000003;
+        this.Ki = 0.0000003;
+        this.Kd = 0.000005;
+
+        this.previousBitDebt = 0;
+        this.lastQpUpdateTimestamp = timestamp;
 
         console.log(`SimpleRateController created: ${codecType}, QP range: [${minQp}, ${maxQp}], target: ${initialBitrate} bps, fps: ${initialFramerate}`);
     }
@@ -18,7 +26,6 @@ class SimpleRateController {
         const timeDeltaSeconds = (timestamp - this.lastBitrateUpdateTimestamp) / 1000;
         const bitsGeneratedTarget = this.targetBitrate * timeDeltaSeconds;
         this.bitDebt -= bitsGeneratedTarget;
-
         this.lastBitrateUpdateTimestamp = timestamp;
     }
 
@@ -32,30 +39,49 @@ class SimpleRateController {
     GetNextQp(timestamp, isKeyFrame) {
         this._updateDebt(timestamp);
 
-        const targetBitsPerFrame = this.targetBitrate / this.framerate;
-        const debtRatio = this.bitDebt / targetBitsPerFrame;
+        const now = timestamp;
+        const timeDelta = (now - this.lastQpUpdateTimestamp) / 1000;
 
-        let qpChange = 0;
-        if (debtRatio > 2.0) { // Large overshoot
-            qpChange = 2;
-        } else if (debtRatio > 1.0) { // Moderate overshoot
-            qpChange = 1;
-        } else if (debtRatio < -2.0) { // Large undershoot
-            qpChange = -2;
-        } else if (debtRatio < -1.0) { // Moderate undershoot
-            qpChange = -1;
+        let qpAdjustment = 0;
+        if (timeDelta > 0) {
+            // P term: Proportional to the current error (bitDebt)
+            const pTerm = this.Kp * this.bitDebt;
+
+            // I term: Proportional to the integral of the error (already in bitDebt)
+            const iTerm = this.Ki * this.bitDebt * timeDelta; // Scale by timeDelta
+
+            // D term: Proportional to the rate of change of the error
+            const debtChange = this.bitDebt - this.previousBitDebt;
+            const dTerm = this.Kd * (debtChange / timeDelta);
+
+            qpAdjustment = pTerm + iTerm + dTerm;
+            this.previousBitDebt = this.bitDebt;
+            this.lastQpUpdateTimestamp = now;
         }
 
-        this.currentQp = Math.max(this.minQp, Math.min(this.maxQp, this.currentQp + qpChange));
+        // Only apply adjustment if it's significant to cross the 0.5 threshold for a QP change
+        if (Math.abs(qpAdjustment) > 0.5) {
+            this.currentQp += qpAdjustment;
+        }
+        this.currentQp = Math.max(this.minQp, Math.min(this.maxQp, this.currentQp));
 
-        let finalQp = this.currentQp;
+        let qpToDither = this.currentQp;
         if (isKeyFrame) {
-            finalQp = Math.min(this.maxQp, this.currentQp + 10); // Boost QP for keyframe
-            console.log(`Keyframe QP boost: ${this.currentQp} -> ${finalQp}`);
+            qpToDither = Math.min(this.maxQp, this.currentQp + 10); // Boost QP for keyframe
+            console.log(`Keyframe QP boost: ${this.currentQp.toFixed(2)} -> ${qpToDither.toFixed(2)}`);
         }
 
-        console.log(`SimpleRateController GetNextQp: debt: ${this.bitDebt.toFixed(0)}, targetBits: ${targetBitsPerFrame.toFixed(0)}, debtRatio: ${debtRatio.toFixed(2)}, isKey: ${isKeyFrame}, nextQp: ${finalQp}`);
-        return finalQp;
+        // Dithered rounding
+        const floorQp = Math.floor(qpToDither);
+        const fraction = qpToDither - floorQp;
+        let ditheredQp = floorQp;
+        if (Math.random() < fraction) {
+            ditheredQp = Math.min(this.maxQp, floorQp + 1);
+        }
+        ditheredQp = Math.max(this.minQp, ditheredQp);
+
+        console.log(`SimpleRateController GetNextQp: debt: ${this.bitDebt.toFixed(0)}, adj: ${qpAdjustment.toFixed(2)}, floatQp: ${this.currentQp.toFixed(2)}, nextQp: ${ditheredQp}`);
+        return ditheredQp;
     }
 
     OnEncodedFrame(timestamp, encodedSizeBytes, isKeyFrame) {
