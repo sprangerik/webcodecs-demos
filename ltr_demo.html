@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebCodecs LTR Demo</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        h1 {
+            text-align: center;
+            color: #0056b3;
+        }
+        .videos {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+        video {
+            border: 1px solid #ccc;
+            background-color: #000;
+        }
+        #decodedCanvas {
+            border: 1px solid #ccc;
+            background-color: #000;
+        }
+        #bitrateGraph {
+            border: 1px solid #ccc;
+            background-color: #fff;
+        }
+        #rawVideo {
+            transform: scaleX(-1);
+        }
+        .layout-container {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+        .settings {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            width: 48%;
+        }
+        .settings h2 {
+            margin-top: 0;
+            color: #0056b3;
+        }
+        .settings > div {
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+        }
+        .settings label {
+            margin-right: 10px;
+            width: 120px;
+        }
+        .settings select, .settings input[type="range"], .settings input[type="number"] {
+            flex-grow: 1;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .settings input[type="range"] {
+            margin-right: 10px;
+        }
+        .settings input[type="number"].invalid {
+            border-color: red;
+        }
+        .graph {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            width: 48%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #333;
+        }
+        .graph h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #0056b3;
+        }
+        .graph-legend {
+            display: flex;
+            justify-content: center;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        .legend-item {
+            margin: 0 10px;
+            display: flex;
+            align-items: center;
+        }
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            margin-right: 5px;
+            border: 1px solid #ccc;
+        }
+        .controls {
+            text-align: center;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 1em;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .highlight-warning {
+            background-color: red;
+            color: white;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebCodecs LTR Demo</h1>
+
+    <div class="videos">
+        <video id="rawVideo" width="640" height="480" autoplay muted playsinline></video>
+        <canvas id="decodedCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="layout-container">
+        <div class="settings">
+            <h2>Settings</h2>
+            <div>
+
+                <label for="codec">Codec:</label>
+                <select id="codec">
+                </select>
+            </div>
+            <div>
+                <label for="bitrate">Bitrate (kbps):</label>
+                <input type="range" id="bitrate" min="100" max="2500" value="500">
+                <span id="bitrateValue">500 kbps</span>
+            </div>
+            <div>
+                <button id="requestKeyframeButton">Request Keyframe</button>
+            </div>
+        </div>
+
+        <div class="graph">
+            <h3>Encoded Bitrate</h3>
+            <canvas id="bitrateGraph" width="600" height="350"></canvas>
+            <div class="graph-legend">
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: blue;"></span> Target
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: red;"></span> Actual
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button id="startButton">Start Demo</button>
+        <button id="stopButton" disabled>Stop Demo</button>
+    </div>
+
+    <div id="warningMessage">
+        This demo uses experimental WebCodecs features for manual reference frame control. It is currently best supported in Chromium-based browsers with the <code>chrome://flags/#enable-experimental-web-platform-features</code> flag enabled.
+    </div>
+
+    <script>
+        const decodedCtx = decodedCanvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const codecSelect = document.getElementById('codec');
+        const bitrateSlider = document.getElementById('bitrate');
+        const bitrateValue = document.getElementById('bitrateValue');
+        const requestKeyframeButton = document.getElementById('requestKeyframeButton');
+        const graphCanvas = document.getElementById('bitrateGraph');
+        const graphCtx = graphCanvas.getContext('2d');
+
+        let mediaStream = null;
+        let encoder = null;
+        let decoder = null;
+        let frameSource = null;
+        let frameCount = 0;
+        const framerate = 30;
+        let lastConfiguredCodec = '';
+        let needsKeyFrame = false;
+        let rateController = null;
+
+        // Graph variables
+        let graphData = [];
+        const maxGraphPoints = 120; // Show last 24 seconds
+        let lastBitrateCalcTime = performance.now();
+        let bytesSentInInterval = 0;
+        let graphIntervalId = null;
+        const graphUpdateInterval = 200; // ms
+
+
+        async function populateCodecList(bitrateMode = "constant") {
+            codecSelect.innerHTML = ''; // Clear existing options
+            const warningMessage = document.getElementById('warningMessage');
+            warningMessage.classList.remove('highlight-warning');
+
+            const codecs = [
+                { name: 'H.264', codec: 'avc1.42001E', type: 'avc' },
+                { name: 'H.265', codec: 'hev1.1.6.L93.B0', type: 'hevc' },
+                { name: 'VP8', codec: 'vp8', type: 'vp8' },
+                { name: 'VP9', codec: 'vp09.00.10.08', type: 'vp9' },
+                { name: 'AV1', codec: 'av01.0.04M.08', type: 'av1' },
+            ];
+
+            let foundCodec = false;
+            for (const codecInfo of codecs) {
+                const baseConfig = {
+                    codec: codecInfo.codec,
+                    width: 640,
+                    height: 480,
+                    bitrateMode: bitrateMode,
+                    scalabilityMode: "manual",
+                };
+                if (bitrateMode === 'constant') {
+                    baseConfig.bitrate = 500000;
+                }
+
+                // Check for hardware support
+                let hwConfig = { ...baseConfig, hardwareAcceleration: 'prefer-hardware' };
+                try {
+                    const hwSupport = await VideoEncoder.isConfigSupported(hwConfig);
+                    if (hwSupport.supported) {
+                        const option = document.createElement('option');
+                        option.value = `${codecInfo.type}-hw`;
+                        option.textContent = `${codecInfo.name} (HW)`;
+                        codecSelect.appendChild(option);
+                        foundCodec = true;
+                    }
+                } catch (e) { console.warn(`Error checking HW support for ${codecInfo.name} (${bitrateMode}): ${e}`); }
+
+                // Check for software support
+                let swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' };
+                try {
+                    const swSupport = await VideoEncoder.isConfigSupported(swConfig);
+                    if (swSupport.supported) {
+                        const option = document.createElement('option');
+                        option.value = `${codecInfo.type}-sw`;
+                        option.textContent = `${codecInfo.name} (SW)`;
+                        codecSelect.appendChild(option);
+                        foundCodec = true;
+                    }
+                } catch (e) { console.warn(`Error checking SW support for ${codecInfo.name} (${bitrateMode}): ${e}`); }
+            }
+
+            if (!foundCodec) {
+                warningMessage.classList.add('highlight-warning');
+                const option = document.createElement('option');
+                option.textContent = "No codecs with manual mode support found";
+                codecSelect.appendChild(option);
+                codecSelect.disabled = true;
+                startButton.disabled = true;
+            } else {
+                codecSelect.disabled = false;
+                // Set default to AV1 if available
+                const av1Hw = codecSelect.querySelector('option[value="av1-hw"]');
+                const av1Sw = codecSelect.querySelector('option[value="av1-sw"]');
+                if (av1Hw) av1Hw.selected = true;
+                else if (av1Sw) av1Sw.selected = true;
+            }
+        }
+
+        function drawGraph() {
+            const width = graphCanvas.width;
+            const height = graphCanvas.height;
+            graphCtx.clearRect(0, 0, width, height);
+
+            if (graphData.length === 0) return;
+
+            const paddingLeft = 70;
+            const paddingRight = 10;
+            const paddingTop = 10;
+            const paddingBottom = 20;
+            const graphHeight = height - paddingTop - paddingBottom;
+            const graphWidth = width - paddingLeft - paddingRight;
+
+            // Styles
+            graphCtx.strokeStyle = '#ccc';
+            graphCtx.lineWidth = 1;
+            graphCtx.font = '12px sans-serif';
+            graphCtx.fillStyle = '#333';
+            graphCtx.textAlign = "right";
+
+            // Find max bitrate for Y-axis scaling
+            let maxBitrate = 500000; // Min scale of 500 kbps
+            graphData.forEach(p => {
+                maxBitrate = Math.max(maxBitrate, p.target, p.actual);
+            });
+            maxBitrate = Math.ceil(maxBitrate / 500000) * 500000; // Round up to next 500 kbps
+
+            const scaleY = graphHeight / maxBitrate;
+            const scaleX = graphWidth / (maxGraphPoints - 1);
+
+            // Draw Y-axis labels and grid lines
+            const yLabelCount = 5;
+            for (let i = 0; i <= yLabelCount; i++) {
+                const val = (maxBitrate / yLabelCount) * i;
+                const y = paddingTop + graphHeight - val * scaleY;
+                graphCtx.fillText(`${(val / 1000).toFixed(0)} kbps`, paddingLeft - 10, y + 4);
+                graphCtx.beginPath();
+                graphCtx.moveTo(paddingLeft, y);
+                graphCtx.lineTo(width - paddingRight, y);
+                graphCtx.stroke();
+            }
+
+            // Draw X-axis (time)
+            graphCtx.beginPath();
+            graphCtx.moveTo(paddingLeft, height - paddingBottom);
+            graphCtx.lineTo(width - paddingRight, height - paddingBottom);
+            graphCtx.stroke();
+
+            const plotX = (index) => paddingLeft + index * scaleX;
+            const plotY = (bitrate) => paddingTop + graphHeight - bitrate * scaleY;
+
+            // Plot Target Bitrate
+            graphCtx.beginPath();
+            graphCtx.strokeStyle = 'blue';
+            graphCtx.lineWidth = 2;
+            graphData.forEach((point, index) => {
+                const x = plotX(index);
+                const y = plotY(point.target);
+                if (index === 0) graphCtx.moveTo(x, y);
+                else graphCtx.lineTo(x, y);
+            });
+            graphCtx.stroke();
+
+            // Plot Actual Bitrate
+            graphCtx.beginPath();
+            graphCtx.strokeStyle = 'red';
+            graphCtx.lineWidth = 2;
+            graphData.forEach((point, index) => {
+                const x = plotX(index);
+                const y = plotY(point.actual);
+                if (index === 0) graphCtx.moveTo(x, y);
+                else graphCtx.lineTo(x, y);
+            });
+            graphCtx.stroke();
+        }
+
+        function getEncoderConfig() {
+            const selectedCodecOption = codecSelect.value;
+            const [type, accel] = selectedCodecOption.split('-');
+            const bitrate = parseInt(bitrateSlider.value) * 1000;
+
+            let encoderConfig = {
+                codec: '',
+                width: 640,
+                height: 480,
+                framerate: framerate,
+                bitrate: bitrate,
+                bitrateMode: "constant",
+                scalabilityMode: "manual",
+            };
+
+            if (accel === 'hw') {
+                encoderConfig.hardwareAcceleration = 'prefer-hardware';
+            } else if (accel === 'sw') {
+                encoderConfig.hardwareAcceleration = 'prefer-software';
+            }
+
+            switch (type) {
+                case 'avc':
+                    encoderConfig.codec = 'avc1.42001E'; // Baseline profile
+                    encoderConfig.avc = { format: 'annexb' };
+                    break;
+                case 'hevc':
+                    encoderConfig.codec = 'hev1.1.6.L93.B0';
+                    // encoderConfig.hevc = { format: 'annexb' }; // HEVC often uses annexb too
+                    break;
+                case 'vp8':
+                    encoderConfig.codec = 'vp8';
+                    break;
+                case 'vp9':
+                    encoderConfig.codec = 'vp09.00.10.08';
+                    break;
+                case 'av1':
+                    encoderConfig.codec = 'av01.0.04M.08';
+                    break;
+            }
+            return encoderConfig;
+        }
+
+        function getDecoderConfig(encoderConfig) {
+            const decoderConfig = {
+                codec: encoderConfig.codec,
+                codedWidth: 640,
+                codedHeight: 480
+            };
+
+            if (encoderConfig.codec.startsWith('avc1')) {
+                decoderConfig.avc = { format: 'annexb' };
+                decoderConfig.hardwareAcceleration = 'prefer-software';
+                console.log('Forcing software decode for H.264');
+            }
+            return decoderConfig;
+        }
+
+        function getQpRange(codecType) {
+            if (codecType === 'avc' || codecType === 'hevc') {
+                return { min: 0, max: 51 };
+            }
+            return { min: 0, max: 63 }; // VPx, AV1
+        }
+
+                async function startEncoding() {
+            if (!mediaStream) return;
+
+            const track = mediaStream.getVideoTracks()[0];
+            const processor = new MediaStreamTrackProcessor({ track: track });
+            frameSource = processor.readable;
+
+            const encoderConfig = getEncoderConfig();
+            lastConfiguredCodec = encoderConfig.codec;
+            encoder = new VideoEncoder({
+                output: (chunk, meta) => {
+                    bytesSentInInterval += chunk.byteLength;
+                    if (decoder.state === 'configured') {
+                        decoder.decode(chunk);
+                    }
+                    if (rateController) {
+                         rateController.OnEncodedFrame(performance.now(), chunk.byteLength, chunk.type === 'key');
+                    }
+                },
+                error: (e) => {
+                    console.error('Encoder Error:', e);
+                }
+            });
+            await encoder.configure(encoderConfig);
+
+            decoder = new VideoDecoder({
+                output: (frame) => {
+                    decodedCtx.drawImage(frame, 0, 0, 640, 480);
+                    frame.close();
+                },
+                error: (e) => {
+                    console.error('Decoder Error:', e);
+                }
+            });
+
+            const decoderConfig = getDecoderConfig(encoderConfig);
+            await decoder.configure(decoderConfig);
+
+            const reader = frameSource.getReader();
+
+            bytesSentInInterval = 0;
+            lastBitrateCalcTime = performance.now();
+            graphData = [];
+            if (graphIntervalId) clearInterval(graphIntervalId);
+            graphIntervalId = setInterval(() => {
+                const now = performance.now();
+                const timeDelta = (now - lastBitrateCalcTime) / 1000;
+                if (timeDelta === 0) return;
+
+                const actualBitrate = (bytesSentInInterval * 8) / timeDelta;
+                const targetBitrate = parseInt(bitrateSlider.value) * 1000;
+
+                graphData.push({ time: now, target: targetBitrate, actual: actualBitrate });
+                if (graphData.length > maxGraphPoints) {
+                    graphData.shift();
+                }
+
+                bytesSentInInterval = 0;
+                lastBitrateCalcTime = now;
+                drawGraph();
+            }, graphUpdateInterval);
+
+            let frameCounter = 0;
+            function processFrame() {
+                reader.read().then(({ done, value }) => {
+                    if (done) return;
+
+                    const frame = value;
+                    if (encoder.state === 'configured') {
+                        const buffers = encoder.getAllFrameBuffers();
+                        const encodeOptions = {
+                            keyFrame: needsKeyFrame,
+                            referenceBuffers: [buffers[0]],
+                            updateBuffer: buffers[0]
+                        };
+                        encoder.encode(frame, encodeOptions);
+                        if (needsKeyFrame) needsKeyFrame = false;
+                    }
+                    frame.close();
+
+                    if (!stopButton.disabled) {
+                        requestAnimationFrame(processFrame);
+                    }
+                }).catch(e => {
+                    console.error("Error reading frame:", e);
+                });
+            }
+            requestAnimationFrame(processFrame);
+        }
+
+        function stopEncoding() {
+            if (frameSource) {
+                frameSource = null;
+            }
+            if (encoder && encoder.state !== 'closed') {
+                encoder.close();
+                encoder = null;
+            }
+            if (decoder && decoder.state !== 'closed') {
+                decoder.close();
+                decoder = null;
+            }
+            decodedCtx.clearRect(0, 0, decodedCanvas.width, decodedCanvas.height);
+            if (graphIntervalId) {
+                clearInterval(graphIntervalId);
+                graphIntervalId = null;
+            }
+            rateController = null;
+        }
+
+        async function reconfigureRtc() {
+            if (!encoder || encoder.state !== 'configured' || !decoder || decoder.state !== 'configured') {
+                return;
+            }
+
+            const encoderConfig = getEncoderConfig();
+            await encoder.configure(encoderConfig);
+
+
+
+            if (encoderConfig.codec !== lastConfiguredCodec) {
+                console.log('Codec changed, reconfiguring decoder and requesting key frame');
+                lastConfiguredCodec = encoderConfig.codec;
+                const decoderConfig = getDecoderConfig(encoderConfig);
+                await decoder.configure(decoderConfig);
+                needsKeyFrame = true;
+            }
+        }
+
+
+        bitrateSlider.addEventListener('input', () => {
+            bitrateValue.textContent = bitrateSlider.value + ' kbps';
+            reconfigureRtc();
+        });
+
+
+        codecSelect.addEventListener('change', () => {
+            reconfigureRtc();
+        });
+
+        requestKeyframeButton.addEventListener('click', () => {
+            if (encoder && encoder.state === 'configured') {
+                needsKeyFrame = true;
+                console.log("Keyframe requested");
+            }
+        });
+
+        startButton.addEventListener('click', async () => {
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+                rawVideo.srcObject = mediaStream;
+                await rawVideo.play();
+                stopButton.disabled = false;
+                startEncoding();
+            } catch (err) {
+                console.error("Error accessing camera: ", err);
+                alert("Could not access camera. Please ensure permission is granted.");
+                startButton.disabled = false;
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            stopButton.disabled = true;
+            stopEncoding();
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+                rawVideo.srcObject = null;
+            }
+            startButton.disabled = false;
+        });
+
+        window.addEventListener('load', () => populateCodecList("constant"));
+    </script>
+</body>
+</html>
