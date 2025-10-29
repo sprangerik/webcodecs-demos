@@ -152,9 +152,14 @@
                 </select>
             </div>
             <div>
-                <label for="bitrate">Bitrate (kbps):</label>
+                <label for="bitrate">Encoder Bitrate (kbps):</label>
                 <input type="range" id="bitrate" min="100" max="2500" value="500">
                 <span id="bitrateValue">500 kbps</span>
+            </div>
+            <div>
+                <label for="transportBitrate">Transport Bitrate (kbps):</label>
+                <input type="range" id="transportBitrate" min="100" max="2500" value="500">
+                <span id="transportBitrateValue">500 kbps</span>
             </div>
             <div>
                 <button id="requestKeyframeButton">Request Keyframe</button>
@@ -185,6 +190,7 @@
     </div>
 
     <script src="ltr_reference_controller.js"></script>
+    <script src="simulated_frame_transport.js"></script>
     <script>
         const decodedCtx = decodedCanvas.getContext('2d');
         const startButton = document.getElementById('startButton');
@@ -192,6 +198,8 @@
         const codecSelect = document.getElementById('codec');
         const bitrateSlider = document.getElementById('bitrate');
         const bitrateValue = document.getElementById('bitrateValue');
+        const transportBitrateSlider = document.getElementById('transportBitrate');
+        const transportBitrateValue = document.getElementById('transportBitrateValue');
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
         const graphCanvas = document.getElementById('bitrateGraph');
         const graphCtx = graphCanvas.getContext('2d');
@@ -205,6 +213,7 @@
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
         let ltrController = null;
+        let transport = null;
 
         // Graph variables
         let graphData = [];
@@ -439,8 +448,8 @@
             encoder = new VideoEncoder({
                 output: (chunk, meta) => {
                     bytesSentInInterval += chunk.byteLength;
-                    if (decoder.state === 'configured') {
-                        decoder.decode(chunk);
+                    if (transport) {
+                        transport.SendFrame(chunk, meta);
                     }
                 },
                 error: (e) => {
@@ -461,6 +470,13 @@
                     console.error('Decoder Error:', e);
                 }
             });
+
+            transport = new SimulatedFrameTransport((chunk, meta) => {
+                if (decoder.state === 'configured') {
+                    decoder.decode(chunk);
+                }
+            });
+            transport.SetRate(parseInt(transportBitrateSlider.value) * 1000);
 
             const decoderConfig = getDecoderConfig(encoderConfig);
             await decoder.configure(decoderConfig);
@@ -524,6 +540,10 @@
                 decoder.close();
                 decoder = null;
             }
+            if (transport) {
+                transport.Stop();
+                transport = null;
+            }
             decodedCtx.clearRect(0, 0, decodedCanvas.width, decodedCanvas.height);
             if (graphIntervalId) {
                 clearInterval(graphIntervalId);
@@ -554,11 +574,17 @@
 
         bitrateSlider.addEventListener('input', () => {
             bitrateValue.textContent = bitrateSlider.value + ' kbps';
-            reconfigureRtc();
-        });
-
-
-        codecSelect.addEventListener('change', () => {
+                        reconfigureRtc();
+                    });
+            
+                    transportBitrateSlider.addEventListener('input', () => {
+                        transportBitrateValue.textContent = transportBitrateSlider.value + ' kbps';
+                        if (transport) {
+                            transport.SetRate(parseInt(transportBitrateSlider.value) * 1000);
+                        }
+                    });
+            
+                    codecSelect.addEventListener('change', () => {
             reconfigureRtc();
         });
 
