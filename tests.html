@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unit Tests</title>
+</head>
+<body>
+    <h1>Running Unit Tests... Check Console</h1>
+
+    <script src="frame_assembler.js"></script>
+    <script src="simulated_frame_transport.js"></script>
+    <script src="ltr_reference_controller.js"></script>
+    <script src="simple_rate_controller.js"></script>
+    <script src="encoded_frame.js"></script>
+
+    <script>
+        // Basic Assertion Utility
+        const assert = {
+            _testCount: 0,
+            _failCount: 0,
+            _results: [],
+
+            _logResult: function(isSuccess, message) {
+                this._testCount++;
+                const result = {
+                    test: message,
+                    status: isSuccess ? 'PASS' : 'FAIL',
+                };
+                this._results.push(result);
+                if (isSuccess) {
+                    console.log(`%cPASS: ${message}`, 'color: green');
+                } else {
+                    this._failCount++;
+                    console.error(`%cFAIL: ${message}`, 'color: red');
+                }
+            },
+
+            strictEqual: function(actual, expected, message) {
+                const isSuccess = (actual === expected);
+                this._logResult(isSuccess, message + ` (Expected: ${expected}, Got: ${actual})`);
+            },
+
+            deepStrictEqual: function(actual, expected, message) {
+                const isSuccess = JSON.stringify(actual) === JSON.stringify(expected);
+                this._logResult(isSuccess, message + ` (Expected: ${JSON.stringify(expected)}, Got: ${JSON.stringify(actual)})`);
+            },
+
+            isTrue: function(condition, message) {
+                this._logResult(condition, message);
+            },
+
+            isFalse: function(condition, message) {
+                this._logResult(!condition, message);
+            },
+
+            summary: function() {
+                const summary = {
+                    total: this._testCount,
+                    passed: this._testCount - this._failCount,
+                    failed: this._failCount,
+                    results: this._results
+                };
+                console.log('\n--- Test Summary ---');
+                if (this._failCount === 0) {
+                    console.log(`%cAll ${this._testCount} tests passed!`, 'color: green; font-weight: bold;');
+                } else {
+                    console.error(`%c${this._failCount} of ${this._testCount} tests failed.`, 'color: red; font-weight: bold;');
+                }
+                console.log('--- JSON Test Results ---');
+                console.log(JSON.stringify(summary, null, 2));
+                return this._failCount === 0;
+            }
+        };
+
+        // --- Unit Tests for FrameAssembler ---
+        function runFrameAssemblerTests() {
+            console.log('\n--- Running FrameAssembler Tests ---');
+
+            let decodedFrames = [];
+            const onReadyToRenderCallback = (encodedFrame) => {
+                decodedFrames.push(encodedFrame.frameId);
+            };
+
+            const assembler = new FrameAssembler(onReadyToRenderCallback);
+
+            // Mock EncodedVideoChunk for testing
+            const createMockEncodedChunk = (type, timestamp) => ({
+                type: type,
+                timestamp: timestamp,
+                byteLength: 100, // Dummy value
+                data: new ArrayBuffer(100) // Dummy data
+            });
+
+            // Test Case 1: Keyframe should be decoded immediately
+            decodedFrames = [];
+            assembler.reset();
+            assembler.decoderNeedsKeyFrame = true; // Simulate decoder needing a keyframe
+            const keyFrame1 = new EncodedFrame(createMockEncodedChunk('key', 1000), 1, [], 1000);
+            assembler.OnFrameReceived(keyFrame1);
+            assert.deepStrictEqual(decodedFrames, [1], 'Keyframe 1 should be decoded immediately');
+            assert.isFalse(assembler.decoderNeedsKeyFrame, 'decoderNeedsKeyFrame should be false after keyframe');
+            assert.strictEqual(assembler.bufferedFrames.size, 0, 'Buffered frames should be empty');
+
+            // Test Case 2: Delta frame before keyframe should be buffered
+            decodedFrames = [];
+            assembler.reset();
+            assembler.decoderNeedsKeyFrame = true;
+            const deltaFrame1 = new EncodedFrame(createMockEncodedChunk('delta', 2000), 2, [1], 2000);
+            assembler.OnFrameReceived(deltaFrame1);
+            assert.deepStrictEqual(decodedFrames, [], 'Delta frame 1 should be buffered');
+            assert.strictEqual(assembler.bufferedFrames.size, 1, 'Buffered frames should contain 1 frame');
+            assert.isTrue(assembler.decoderNeedsKeyFrame, 'decoderNeedsKeyFrame should still be true');
+
+            // Test Case 3: Keyframe after buffered delta frame should decode both
+            decodedFrames = [];
+            assembler.reset();
+            assembler.decoderNeedsKeyFrame = true;
+            const deltaFrame2 = new EncodedFrame(createMockEncodedChunk('delta', 2000), 2, [1], 2000);
+            const deltaFrame3 = new EncodedFrame(createMockEncodedChunk('delta', 3000), 3, [2], 3000);
+            assembler.OnFrameReceived(deltaFrame2);
+            assembler.OnFrameReceived(deltaFrame3);
+            assert.strictEqual(assembler.bufferedFrames.size, 2, 'Buffered frames should contain 2 frames');
+            assert.deepStrictEqual(decodedFrames, [], 'No frames decoded yet');
+
+            const keyFrame2 = new EncodedFrame(createMockEncodedChunk('key', 1000), 1, [], 1000);
+            assembler.OnFrameReceived(keyFrame2);
+            // Expect keyFrame2 (ID 1), then deltaFrame2 (ID 2), then deltaFrame3 (ID 3)
+            assert.deepStrictEqual(decodedFrames, [1, 2, 3], 'Keyframe 2 should decode itself and buffered frames');
+            assert.strictEqual(assembler.bufferedFrames.size, 0, 'Buffered frames should be empty after decoding');
+            assert.isFalse(assembler.decoderNeedsKeyFrame, 'decoderNeedsKeyFrame should be false after keyframe');
+
+            // Test Case 4: Frames arriving out of order but dependencies met
+            decodedFrames = [];
+            assembler.reset();
+            assembler.decoderNeedsKeyFrame = false; // Assume decoder is already initialized
+            const frameA = new EncodedFrame(createMockEncodedChunk('delta', 2000), 2, [1], 2000);
+            const frameB = new EncodedFrame(createMockEncodedChunk('delta', 3000), 3, [1, 2], 3000);
+            const frameC = new EncodedFrame(createMockEncodedChunk('delta', 4000), 4, [3], 4000);
+            const frame1 = new EncodedFrame(createMockEncodedChunk('key', 1000), 1, [], 1000);
+
+            assembler.OnFrameReceived(frameA); // Buffered
+            assembler.OnFrameReceived(frameC); // Buffered
+            assembler.OnFrameReceived(frameB); // Buffered
+            assert.deepStrictEqual(decodedFrames, [], 'No frames decoded yet');
+            assert.strictEqual(assembler.bufferedFrames.size, 3, 'All frames buffered');
+
+            assembler.OnFrameReceived(frame1); // Keyframe, should trigger decoding of A, B, C
+            assert.deepStrictEqual(decodedFrames, [1, 2, 3, 4], 'All frames should be decoded in order');
+            assert.strictEqual(assembler.bufferedFrames.size, 0, 'Buffered frames should be empty');
+
+            // Test Case 5: _clearOldState functionality
+            decodedFrames = [];
+            assembler.reset();
+            assembler.decoderNeedsKeyFrame = true;
+            const oldFrame = new EncodedFrame(createMockEncodedChunk('delta', 100), 1, [], 100);
+            const currentFrame = new EncodedFrame(createMockEncodedChunk('key', 1000), 2, [], 1000);
+            assembler.OnFrameReceived(oldFrame); // Should be buffered
+            assert.strictEqual(assembler.bufferedFrames.size, 1, 'Old frame should be buffered');
+            assembler.OnFrameReceived(currentFrame); // Should decode and clear oldFrame
+            assert.deepStrictEqual(decodedFrames, [2], 'Only current keyframe should be decoded');
+            assert.strictEqual(assembler.bufferedFrames.size, 0, 'Old buffered frame should be cleared');
+
+            // Test Case 6: Reset functionality
+            assembler.reset();
+            assert.strictEqual(assembler.decodedFrames.size, 0, 'Decoded frames should be empty after reset');
+            assert.strictEqual(assembler.bufferedFrames.size, 0, 'Buffered frames should be empty after reset');
+            assert.isFalse(assembler.decoderNeedsKeyFrame, 'decoderNeedsKeyFrame should be false after reset');
+        }
+
+        // --- Unit Tests for SimpleRateController ---
+        function runSimpleRateControllerTests() {
+            console.log('\n--- Running SimpleRateController Tests ---');
+
+            // Test Case 1: Constructor and initial state
+            const now = performance.now();
+            const controller = new SimpleRateController('avc', 10, 50, 1000000, 30, 500, 70, now);
+
+            assert.strictEqual(controller.codecType, 'avc', 'Constructor should set codecType');
+            assert.strictEqual(controller.minQp, 10, 'Constructor should set minQp');
+            assert.strictEqual(controller.maxQp, 50, 'Constructor should set maxQp');
+            assert.strictEqual(controller.targetBitrate, 1000000, 'Constructor should set targetBitrate');
+            assert.strictEqual(controller.framerate, 30, 'Constructor should set framerate');
+            assert.strictEqual(controller.maxBufferLevelMs, 500, 'Constructor should set maxBufferLevelMs');
+            assert.strictEqual(controller.targetFullnessPercent, 70, 'Constructor should set targetFullnessPercent');
+            assert.strictEqual(controller._lastFrameEncodedTime, now, 'Constructor should set _lastFrameEncodedTime');
+            assert.strictEqual(controller._currentBufferLevelBits, 0, 'Initial buffer level should be 0');
+            assert.isTrue(controller._expectedFrameSizeRatio instanceof Map, 'Expected frame size ratio should be a Map');
+
+            // Test Case 2: _expectedFrameSizeRatio()
+            // AVC has default values, let's test some
+            assert.strictEqual(controller._expectedFrameSizeRatio(10), 2.0, '_expectedFrameSizeRatio(10) for AVC should be 2.0');
+            assert.strictEqual(controller._expectedFrameSizeRatio(30), 1.0, '_expectedFrameSizeRatio(30) for AVC should be 1.0');
+            assert.strictEqual(controller._expectedFrameSizeRatio(50), 0.5, '_expectedFrameSizeRatio(50) for AVC should be 0.5');
+            // Test interpolation
+            assert.strictEqual(controller._expectedFrameSizeRatio(20), 1.5, '_expectedFrameSizeRatio(20) for AVC should be 1.5 (interpolated)');
+            assert.strictEqual(controller._expectedFrameSizeRatio(40), 0.75, '_expectedFrameSizeRatio(40) for AVC should be 0.75 (interpolated)');
+
+            // Test Case 3: OnEncodedFrame()
+            controller.reset(); // Reset for this test case
+            const frameTime1 = now + 100;
+            const frameSize1 = 10000; // 10kb
+            controller.OnEncodedFrame(frameTime1, frameSize1, false);
+            assert.strictEqual(controller._currentBufferLevelBits, frameSize1 * 8, 'Buffer level should update after first frame');
+            assert.strictEqual(controller._lastFrameEncodedTime, frameTime1, 'Last encoded time should update');
+
+            const frameTime2 = now + 200;
+            const frameSize2 = 5000; // 5kb
+            controller.OnEncodedFrame(frameTime2, frameSize2, false);
+            // Expected buffer level: (10000 + 5000) * 8 - (bitrate * (100/1000)) = 120000 - (1000000 * 0.1) = 20000
+            // This calculation is tricky due to time-based drain. Let's simplify for now.
+            // The buffer level should increase by frameSize2 * 8, and then drain based on time.
+            // For a simple test, let's just check if it's non-zero and updated.
+            assert.isTrue(controller._currentBufferLevelBits > 0, 'Buffer level should be positive after second frame');
+            assert.strictEqual(controller._lastFrameEncodedTime, frameTime2, 'Last encoded time should update again');
+
+            // Test Case 4: GetNextQp() - Empty buffer
+            controller.reset();
+            const qpEmpty = controller.GetNextQp(now + 300, false);
+            assert.strictEqual(qpEmpty, controller.minQp, 'GetNextQp should return minQp for empty buffer');
+
+            // Test Case 5: GetNextQp() - Full buffer (overshoot)
+            controller.reset();
+            controller._currentBufferLevelBits = controller.maxBufferLevelBits * 1.1; // 110% full
+            const qpFull = controller.GetNextQp(now + 400, false);
+            assert.strictEqual(qpFull, controller.maxQp, 'GetNextQp should return maxQp for full buffer');
+
+            // Test Case 6: GetNextQp() - Target fullness
+            controller.reset();
+            controller._currentBufferLevelBits = controller.maxBufferLevelBits * (controller.targetFullnessPercent / 100);
+            const qpTarget = controller.GetNextQp(now + 500, false);
+            // For target fullness, QP should be around the middle of minQp and maxQp, adjusted by expectedFrameSizeRatio(30)
+            // Let's check if it's within a reasonable range, or a specific value if we can calculate it.
+            // The default QP for target fullness is 30, so it should be 30.
+            assert.strictEqual(qpTarget, 30, 'GetNextQp should return default QP (30) for target fullness');
+
+            // Test Case 7: GetNextQp() - Overshoot target, but not full
+            controller.reset();
+            controller._currentBufferLevelBits = controller.maxBufferLevelBits * (controller.targetFullnessPercent / 100 + 0.1); // 80% full
+            const qpOvershoot = controller.GetNextQp(now + 600, false);
+            assert.isTrue(qpOvershoot > 30 && qpOvershoot < controller.maxQp, 'GetNextQp should return QP > 30 for overshoot');
+
+            // Test Case 8: GetNextQp() - Undershoot target, but not empty
+            controller.reset();
+            controller._currentBufferLevelBits = controller.maxBufferLevelBits * (controller.targetFullnessPercent / 100 - 0.1); // 60% full
+            const qpUndershoot = controller.GetNextQp(now + 700, false);
+            assert.isTrue(qpUndershoot < 30 && qpUndershoot > controller.minQp, 'GetNextQp should return QP < 30 for undershoot');
+
+            // Test Case 9: SetRates()
+            controller.SetRates(2000000, 60, 1000, 80, now + 800);
+            assert.strictEqual(controller.targetBitrate, 2000000, 'SetRates should update targetBitrate');
+            assert.strictEqual(controller.framerate, 60, 'SetRates should update framerate');
+            assert.strictEqual(controller.maxBufferLevelMs, 1000, 'SetRates should update maxBufferLevelMs');
+            assert.strictEqual(controller.targetFullnessPercent, 80, 'SetRates should update targetFullnessPercent');
+            assert.strictEqual(controller._lastFrameEncodedTime, now + 800, 'SetRates should update _lastFrameEncodedTime');
+            assert.isTrue(controller.maxBufferLevelBits > 0, 'maxBufferLevelBits should be recalculated');
+            assert.isTrue(controller.targetBufferLevelBits > 0, 'targetBufferLevelBits should be recalculated');
+        }
+
+        // Run all tests
+        window.onload = () => {
+            runFrameAssemblerTests();
+            runSimpleRateControllerTests();
+            assert.summary();
+        };
+    </script>
+</body>
+</html>

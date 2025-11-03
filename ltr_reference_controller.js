@@ -1,6 +1,7 @@
 class LtrReferenceController {
-    constructor(buffers) {
+    constructor(buffers, simpleRateController) {
         this.buffers = buffers;
+        this.simpleRateController = simpleRateController;
     }
 
     GetNextEncodeOptions(needsKeyFrame) {

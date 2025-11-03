@@ -163,6 +163,21 @@
                     <label for="maxQp">Max QP:</label>
                     <input type="number" id="maxQp" value="50">
                 </div>
+                <div>
+                    <label for="alpha">Alpha (EMA):</label>
+                    <input type="range" id="alpha" min="0.01" max="1.0" step="0.01" value="0.75">
+                    <span id="alphaValue">0.75</span>
+                </div>
+                <div>
+                    <label for="kpBuffer">Kp Buffer:</label>
+                    <input type="range" id="kpBuffer" min="0.00001" max="0.5" step="0.00001" value="0.35">
+                    <span id="kpBufferValue">0.35000</span>
+                </div>
+                <div>
+                    <label for="targetFullness">Target Fullness (%):</label>
+                    <input type="range" id="targetFullness" min="0" max="100" step="1" value="30">
+                    <span id="targetFullnessValue">30%</span>
+                </div>
             </div>
             <div>
                 <button id="requestKeyframeButton">Request Keyframe</button>
@@ -202,6 +217,12 @@
         const externalRcSettingsDiv = document.getElementById('externalRcSettings');
         const minQpInput = document.getElementById('minQp');
         const maxQpInput = document.getElementById('maxQp');
+        const alphaSlider = document.getElementById('alpha');
+        const alphaValueSpan = document.getElementById('alphaValue');
+        const kpBufferSlider = document.getElementById('kpBuffer');
+        const kpBufferValueSpan = document.getElementById('kpBufferValue');
+        const targetFullnessSlider = document.getElementById('targetFullness');
+        const targetFullnessValueSpan = document.getElementById('targetFullnessValue');
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
         const graphCanvas = document.getElementById('bitrateGraph');
         const graphCtx = graphCanvas.getContext('2d');
@@ -215,6 +236,13 @@
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
         let rateController = null;
+        let lastEncodedDescription = null;
+        let decoderNeedsKeyFrame = false;
+        let frameIdCounter = 0;
+        let lastEncodedFrameId = -1;
+        let currentQpUsed = -1; // New variable to store the QP used for the last encoded frame
+        let maxBufferLevelMs = 600;
+        let targetFullnessPercent = 25;
 
         // Graph variables
         let graphData = [];
@@ -276,6 +304,10 @@
             if (av1Hw) av1Hw.selected = true;
             else if (av1Sw) av1Sw.selected = true;
         }
+
+    </script>
+    <script src="encoded_frame.js"></script>
+    <script>
 
         function drawGraph() {
             const width = graphCanvas.width;
@@ -387,7 +419,7 @@
                     break;
                 case 'hevc':
                     encoderConfig.codec = 'hev1.1.6.L93.B0';
-                    // encoderConfig.hevc = { format: 'annexb' }; // HEVC often uses annexb too
+                    encoderConfig.hevc = { format: 'annexb' }; // HEVC often uses annexb too
                     break;
                 case 'vp8':
                     encoderConfig.codec = 'vp8';
@@ -402,7 +434,7 @@
             return encoderConfig;
         }
 
-        function getDecoderConfig(encoderConfig) {
+        function getDecoderConfig(encoderConfig, description = null) {
             const decoderConfig = {
                 codec: encoderConfig.codec,
                 codedWidth: 640,
@@ -413,6 +445,11 @@
                 decoderConfig.avc = { format: 'annexb' };
                 decoderConfig.hardwareAcceleration = 'prefer-software';
                 console.log('Forcing software decode for H.264');
+            } else if (encoderConfig.codec.startsWith('hev1') && description) {
+                decoderConfig.description = description;
+                decoderConfig.hardwareAcceleration = 'prefer-hardware';
+                decoderConfig.hevc = { format: 'annexb' };
+                console.log('Using description for HEVC decoder config with hardware acceleration');
             }
             return decoderConfig;
         }
@@ -462,6 +499,7 @@
         }
 
         function updateRateController() {
+            // Always use external rate control parameters if external mode is selected
             if (rateControlModeSelect.value === 'external') {
                 if (!validateQpSettings()) {
                     rateController = null;
@@ -472,11 +510,20 @@
                 const maxQp = parseInt(maxQpInput.value);
                 const targetBitrate = parseInt(bitrateSlider.value) * 1000;
                 const now = performance.now();
+                const alpha = parseFloat(alphaSlider.value);
+                const kpBuffer = parseFloat(kpBufferSlider.value);
+                const targetFullness = parseInt(targetFullnessSlider.value);
+
+                // Update global variables for maxBufferLevelMs and targetFullnessPercent
+                // These are used in SetRates and other places where the controller is not directly passed
+                maxBufferLevelMs = 600; // This is currently fixed, but could be a slider too
+                targetFullnessPercent = targetFullness;
 
                 if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
-                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now);
+                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now, maxBufferLevelMs, targetFullnessPercent, alpha, kpBuffer);
                 } else {
-                    rateController.SetRates(targetBitrate, framerate, now);
+                    // Update parameters that can change dynamically
+                    rateController.SetRates(targetBitrate, framerate, maxBufferLevelMs, targetFullnessPercent, now, alpha, kpBuffer);
                 }
             } else {
                 rateController = null;
@@ -497,11 +544,34 @@
             encoder = new VideoEncoder({
                 output: (chunk, meta) => {
                     bytesSentInInterval += chunk.byteLength;
+                    if (meta.decoderConfig && meta.decoderConfig.description) {
+                        lastEncodedDescription = meta.decoderConfig.description;
+                        if (encoderConfig.codec.startsWith('hev1')) {
+                            console.log('HEVC description captured:', lastEncodedDescription);
+                        }
+                    }
+
+                    frameIdCounter++;
+                    const isKeyFrame = (chunk.type === 'key');
+                    const dependencies = isKeyFrame ? [] : [lastEncodedFrameId];
+                    const encodedFrame = new EncodedFrame(chunk, frameIdCounter, dependencies);
+                    lastEncodedFrameId = frameIdCounter;
+
                     if (decoder.state === 'configured') {
-                        decoder.decode(chunk);
+                        if (decoderNeedsKeyFrame) {
+                            if (encodedFrame.encodedChunk.type === 'key') {
+                                decoder.decode(encodedFrame.encodedChunk);
+                                decoderNeedsKeyFrame = false;
+                                console.log('Keyframe received and decoded.');
+                            } else {
+                                console.log('Skipping non-keyframe while keyframe is needed.');
+                            }
+                        } else {
+                            decoder.decode(encodedFrame.encodedChunk);
+                        }
                     }
                     if (rateController) {
-                         rateController.OnEncodedFrame(performance.now(), chunk.byteLength, chunk.type === 'key');
+                         rateController.OnEncodedFrame(performance.now(), chunk.byteLength, currentQpUsed, chunk.type === 'key');
                     }
                 },
                 error: (e) => {
@@ -520,8 +590,9 @@
                 }
             });
 
-            const decoderConfig = getDecoderConfig(encoderConfig);
+            const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
             await decoder.configure(decoderConfig);
+            decoderNeedsKeyFrame = true;
 
             const reader = frameSource.getReader();
 
@@ -555,8 +626,9 @@
                     const frame = value;
                     if (encoder.state === 'configured') {
                         const encodeOptions = { keyFrame: needsKeyFrame };
+                        let nextQp = -1;
                         if (rateController) {
-                            const nextQp = rateController.GetNextQp(performance.now(), needsKeyFrame);
+                            nextQp = rateController.GetNextQp(performance.now(), needsKeyFrame);
                             const codecType = codecSelect.value.split('-')[0];
                             switch (codecType) {
                                 case 'av1': encodeOptions.av1 = { quantizer: nextQp }; break;
@@ -566,6 +638,7 @@
                                 case 'hevc': encodeOptions.hevc = { quantizer: nextQp }; break;
                             }
                         }
+                        currentQpUsed = nextQp; // Store the QP that was actually used
                         encoder.encode(frame, encodeOptions);
                         if (needsKeyFrame) needsKeyFrame = false;
                     }
@@ -613,8 +686,9 @@
             if (encoderConfig.codec !== lastConfiguredCodec) {
                 console.log('Codec changed, reconfiguring decoder and requesting key frame');
                 lastConfiguredCodec = encoderConfig.codec;
-                const decoderConfig = getDecoderConfig(encoderConfig);
+                const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
                 await decoder.configure(decoderConfig);
+                decoderNeedsKeyFrame = true;
                 needsKeyFrame = true;
             }
         }
@@ -637,7 +711,9 @@
         bitrateSlider.addEventListener('input', () => {
             bitrateValue.textContent = bitrateSlider.value + ' kbps';
             if (rateController) {
-                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, performance.now());
+                const alpha = parseFloat(alphaSlider.value);
+                const kpBuffer = parseFloat(kpBufferSlider.value);
+                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer);
             }
             // Reconfigure for internal mode to update bitrate
             if (rateControlModeSelect.value === 'internal') {
@@ -658,6 +734,18 @@
         });
         maxQpInput.addEventListener('input', () => {
             validateQpSettings();
+            updateRateController();
+        });
+        alphaSlider.addEventListener('input', () => {
+            alphaValueSpan.textContent = parseFloat(alphaSlider.value).toFixed(2);
+            updateRateController();
+        });
+        kpBufferSlider.addEventListener('input', () => {
+            kpBufferValueSpan.textContent = parseFloat(kpBufferSlider.value).toFixed(5);
+            updateRateController();
+        });
+        targetFullnessSlider.addEventListener('input', () => {
+            targetFullnessValueSpan.textContent = parseInt(targetFullnessSlider.value) + '%';
             updateRateController();
         });
 

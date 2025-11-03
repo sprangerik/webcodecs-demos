@@ -5,14 +5,23 @@ class SimulatedFrameTransport {
         this.frameQueue = [];
         this.isDelivering = false;
         this.timeoutId = null;
+        this.keyFrameNeeded = false;
     }
 
     SetRate(bandwidthBps) {
         this.bandwidthBps = bandwidthBps;
     }
 
-    SendFrame(frame, metadata) {
-        this.frameQueue.push({ frame, metadata });
+    SetKeyFrameNeeded() {
+        this.keyFrameNeeded = true;
+    }
+
+    ClearKeyFrameNeeded() {
+        this.keyFrameNeeded = false;
+    }
+
+    SendFrame(encodedFrame, meta) {
+        this.frameQueue.push({ encodedFrame, meta });
 
         if (!this.isDelivering) {
             this.DeliverNextFrame();
@@ -26,11 +35,11 @@ class SimulatedFrameTransport {
         }
 
         this.isDelivering = true;
-        const { frame, metadata } = this.frameQueue.shift();
+        const { encodedFrame, meta } = this.frameQueue.shift();
 
         let transmissionTimeMs = 0;
         if (this.bandwidthBps > 0) {
-            const frameSizeBytes = frame.byteLength;
+            const frameSizeBytes = encodedFrame.encodedChunk.byteLength;
             const frameSizeBits = frameSizeBytes * 8;
             transmissionTimeMs = (frameSizeBits / this.bandwidthBps) * 1000;
         } else {
@@ -39,7 +48,7 @@ class SimulatedFrameTransport {
 
         this.timeoutId = setTimeout(() => {
             if (this.frameReceiverCallback) {
-                this.frameReceiverCallback(frame, metadata);
+                this.frameReceiverCallback(encodedFrame, meta);
             }
             // Start processing the next frame only after this one is delivered.
             this.DeliverNextFrame();
@@ -53,5 +62,6 @@ class SimulatedFrameTransport {
         }
         this.frameQueue = [];
         this.isDelivering = false;
+        this.keyFrameNeeded = false;
     }
 }
