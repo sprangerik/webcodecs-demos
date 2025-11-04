@@ -251,7 +251,7 @@ class SimpleRateController {
         this._updateBufferLevel(timestamp);
 
         const currentFullnessPercent = (this.bitDebt / this.maxBufferLevelBits) * 100;
-        console.log(`GetNextQp: currentFullnessPercent: ${currentFullnessPercent.toFixed(1)}%, dropThreshold: ${this.frameDropThresholdPercent}%`);
+        // console.log(`GetNextQp: currentFullnessPercent: ${currentFullnessPercent.toFixed(1)}%, dropThreshold: ${this.frameDropThresholdPercent}%`);
         if (this.frameDropThresholdPercent > 0 && currentFullnessPercent > this.frameDropThresholdPercent) {
             console.log(`Dropping frame, buffer fullness ${currentFullnessPercent.toFixed(1)}% > ${this.frameDropThresholdPercent}%`);
             // Reset re-encode state for the next frame
@@ -330,7 +330,7 @@ class SimpleRateController {
         const encodedSizeBits = encodedSizeBytes * 8;
         const potentialBitDebt = this.bitDebt + encodedSizeBits;
         const potentialFullnessPercent = (potentialBitDebt / this.maxBufferLevelBits) * 100;
-        console.log(`OnEncodedFrame: potentialFullnessPercent: ${potentialFullnessPercent.toFixed(1)}%, reencodeThreshold: ${this.reencodeThresholdPercent}%`);
+        // console.log(`OnEncodedFrame: potentialFullnessPercent: ${potentialFullnessPercent.toFixed(1)}%, reencodeThreshold: ${this.reencodeThresholdPercent}%`);
 
         if (this.reencodeThresholdPercent > 0 && potentialFullnessPercent > this.reencodeThresholdPercent && this.reencodeCount < this.maxReencodeCount) {
             this.reencodeCount++;
