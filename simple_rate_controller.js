@@ -1,5 +1,5 @@
 class SimpleRateController {
-    constructor(codecType, minQp, maxQp, initialBitrate, initialFramerate, timestamp, maxBufferLevelMs, targetFullnessPercent, alpha, Kp_buffer) {
+    constructor(codecType, minQp, maxQp, initialBitrate, initialFramerate, timestamp, maxBufferLevelMs, targetFullnessPercent, alpha, Kp_buffer, frameDropThresholdPercent = 95, reencodeThresholdPercent = 85, maxReencodeCount = 2) {
         this.codecType = codecType;
         this.minQp = minQp;
         this.maxQp = maxQp;
@@ -7,6 +7,12 @@ class SimpleRateController {
         this.framerate = initialFramerate;
         this.maxBufferLevelMs = maxBufferLevelMs;
         this.targetFullnessPercent = targetFullnessPercent;
+        this.alpha = alpha;
+        this.Kp_buffer = Kp_buffer;
+
+        this.frameDropThresholdPercent = frameDropThresholdPercent;
+        this.reencodeThresholdPercent = reencodeThresholdPercent;
+        this.maxReencodeCount = maxReencodeCount;
 
         // Bit depth in bits, represents current buffer level.
         // Start at target minus one frame size.
@@ -21,16 +27,20 @@ class SimpleRateController {
         this.targetBufferLevelBits = this.maxBufferLevelBits * (this.targetFullnessPercent / 100);
 
         // Proportional gain for buffer fullness error
-        this.Kp_buffer = Kp_buffer; // Re-tuned for new calculation
         this.overshootPenalty = 1.5; // Penalize overshooting more heavily
 
         // Statistics for QP-to-size relationship
-        this.alpha = alpha; // Smoothing factor for exponential moving average
         this.avgQp = this.currentQp;
         this.avgSizeRatio = 1.0; // Assuming 1.0 means target size at avgQp
 
         // Last reported QP (for filtering)
         this.lastReportedQp = this.currentQp;
+
+        // Re-encode state
+        this.reencodeCount = 0;
+        this.lastQpAttempt = -1;
+        this.minQpForCurrentFrame = this.minQp;
+        this.maxQpForCurrentFrame = this.maxQp;
 
         // console.log(`SimpleRateController created: ${codecType}, QP range: [${minQp}, ${maxQp}], target: ${initialBitrate} bps, fps: ${initialFramerate}, maxBufferMs: ${maxBufferLevelMs}, targetFullness: ${targetFullnessPercent}%`);
         // console.log(`MaxBufferBits: ${this.maxBufferLevelBits.toFixed(0)}, TargetBufferBits: ${this.targetBufferLevelBits.toFixed(0)}`);
@@ -213,7 +223,7 @@ class SimpleRateController {
                (sizeRatioChange - lowerSizeRatio) / (upperSizeRatio - lowerSizeRatio);
     }
 
-    SetRates(targetBitrate, framerate, newMaxBufferLevelMs, newTargetFullnessPercent, timestamp, newAlpha, newKpBuffer) {
+    SetRates(targetBitrate, framerate, newMaxBufferLevelMs, newTargetFullnessPercent, timestamp, newAlpha, newKpBuffer, newFrameDropThresholdPercent = -1, newReencodeThresholdPercent = -1, newMaxReencodeCount = -1) {
         this._updateBufferLevel(timestamp);
         this.targetBitrate = targetBitrate;
         this.framerate = framerate;
@@ -221,85 +231,136 @@ class SimpleRateController {
         this.targetFullnessPercent = newTargetFullnessPercent;
         this.alpha = newAlpha;
         this.Kp_buffer = newKpBuffer;
+
+        if (newFrameDropThresholdPercent > 0) this.frameDropThresholdPercent = newFrameDropThresholdPercent;
+        if (newReencodeThresholdPercent > 0) this.reencodeThresholdPercent = newReencodeThresholdPercent;
+        if (newMaxReencodeCount > 0) this.maxReencodeCount = newMaxReencodeCount;
+
         this.maxBufferLevelBits = (this.maxBufferLevelMs / 1000) * this.targetBitrate;
         this.targetBufferLevelBits = this.maxBufferLevelBits * (this.targetFullnessPercent / 100);
+
+        // Reset re-encode state
+        this.reencodeCount = 0;
+        this.lastQpAttempt = -1;
+        this.minQpForCurrentFrame = this.minQp;
+        this.maxQpForCurrentFrame = this.maxQp;
         // console.log(`SimpleRateController SetRates: ${targetBitrate} bps, fps: ${framerate}, maxBufferMs: ${this.maxBufferLevelMs}, targetFullness: ${this.targetFullnessPercent}%, alpha: ${this.alpha}, Kp_buffer: ${this.Kp_buffer}`);
     }
 
     GetNextQp(timestamp, isKeyFrame) {
         this._updateBufferLevel(timestamp);
 
-        // Calculate buffer fullness error
-        let bufferError = this.bitDebt - this.targetBufferLevelBits;
-
-        // Apply asymmetric penalty for overshooting
-        if (bufferError > 0) {
-            bufferError *= this.overshootPenalty;
+        const currentFullnessPercent = (this.bitDebt / this.maxBufferLevelBits) * 100;
+        console.log(`GetNextQp: currentFullnessPercent: ${currentFullnessPercent.toFixed(1)}%, dropThreshold: ${this.frameDropThresholdPercent}%`);
+        if (currentFullnessPercent > this.frameDropThresholdPercent) {
+            console.log(`Dropping frame, buffer fullness ${currentFullnessPercent.toFixed(1)}% > ${this.frameDropThresholdPercent}%`);
+            // Reset re-encode state for the next frame
+            this.reencodeCount = 0;
+            this.lastQpAttempt = -1;
+            this.minQpForCurrentFrame = this.minQp;
+            this.maxQpForCurrentFrame = this.maxQp;
+            return -1; // Signal frame drop
         }
 
-        // Determine desired frame size change based on buffer error
-        // A positive bufferError (buffer too full) means we want a smaller frame.
-        // A negative bufferError (buffer too empty) means we want a larger frame.
-        const targetFrameSizeBits = this.targetBitrate / this.framerate;
+        // If not re-encoding, calculate QP based on buffer error
+        if (this.reencodeCount === 0) {
+            // Calculate buffer fullness error
+            let bufferError = this.bitDebt - this.targetBufferLevelBits;
 
-        // Calculate the desired frame size in bits
-        const desiredFrameSizeBits = targetFrameSizeBits - (this.Kp_buffer * bufferError);
+            // Apply asymmetric penalty for overshooting
+            if (bufferError > 0) {
+                bufferError *= this.overshootPenalty;
+            }
 
-        // Calculate the ratio of desired frame size to the current average frame size
-        // This is the 'AVG_Frame_Size_Change' that _qpChangeFromSizeRatioChange expects
-        const sizeChangeRatio = desiredFrameSizeBits / (this.avgSizeRatio * targetFrameSizeBits);
+            // Determine desired frame size change based on buffer error
+            // A positive bufferError (buffer too full) means we want a smaller frame.
+            // A negative bufferError (buffer too empty) means we want a larger frame.
+            const targetFrameSizeBits = this.targetBitrate / this.framerate;
 
-        // Clamp sizeChangeRatio to reasonable bounds (e.g., 0.001 to 628 based on _qpDiffToSizeRatioMap)
-        const clampedSizeChangeRatio = Math.max(0.001, Math.min(628, sizeChangeRatio));
+            // Calculate the desired frame size in bits
+            const desiredFrameSizeBits = targetFrameSizeBits - (this.Kp_buffer * bufferError);
 
-        // Get the QP change from the map
-        const qpChange = this._qpChangeFromSizeRatioChange(clampedSizeChangeRatio);
+            // Calculate the ratio of desired frame size to the current average frame size
+            // This is the 'AVG_Frame_Size_Change' that _qpChangeFromSizeRatioChange expects
+            const sizeChangeRatio = desiredFrameSizeBits / (this.avgSizeRatio * targetFrameSizeBits);
 
-        // Apply the QP change to the average QP
-        let nextQp = this.avgQp + qpChange;
+            // Clamp sizeChangeRatio to reasonable bounds (e.g., 0.001 to 628 based on _qpDiffToSizeRatioMap)
+            const clampedSizeChangeRatio = Math.max(0.001, Math.min(628, sizeChangeRatio));
 
-        // Clamp QP to min/max allowed values
-        nextQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
+            // Get the QP change from the map
+            const qpChange = this._qpChangeFromSizeRatioChange(clampedSizeChangeRatio);
 
-        let qpToDither = nextQp;
-        if (isKeyFrame) {
-            // Keyframes typically get a slightly higher QP to ensure they are smaller
-            // and easier to transmit, or lower to improve quality. This needs tuning.
-            // For now, let's apply a small boost to make them slightly smaller by increasing QP.
-            qpToDither = Math.min(this.maxQp, nextQp + 5); 
-            // console.log(`Keyframe QP adjustment: ${nextQp.toFixed(2)} -> ${qpToDither.toFixed(2)}`);
+            // Apply the QP change to the average QP
+            let nextQp = this.avgQp + qpChange;
+
+            // Clamp QP to min/max allowed values
+            nextQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
+
+            let qpToDither = nextQp;
+            if (isKeyFrame) {
+                qpToDither = Math.min(this.maxQp, nextQp + 5);
+            }
+
+            // Dithered rounding
+            const floorQp = Math.floor(qpToDither);
+            const fraction = qpToDither - floorQp;
+            let ditheredQp = floorQp;
+            if (Math.random() < fraction) {
+                ditheredQp = Math.min(this.maxQp, floorQp + 1);
+            }
+            this.currentQp = Math.max(this.minQp, ditheredQp);
+            this.lastQpAttempt = this.currentQp;
+            this.minQpForCurrentFrame = this.minQp;
+            this.maxQpForCurrentFrame = this.maxQp;
+        } else {
+            // Re-encode: Adjust QP based on the last attempt
+            // Simple binary search-like adjustment
+            let nextQp = Math.round((this.minQpForCurrentFrame + this.maxQpForCurrentFrame) / 2);
+            this.currentQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
+            this.lastQpAttempt = this.currentQp;
         }
 
-        // Dithered rounding
-        const floorQp = Math.floor(qpToDither);
-        const fraction = qpToDither - floorQp;
-        let ditheredQp = floorQp;
-        if (Math.random() < fraction) {
-            ditheredQp = Math.min(this.maxQp, floorQp + 1);
-        }
-        ditheredQp = Math.max(this.minQp, ditheredQp);
-
-        this.currentQp = ditheredQp; // Update currentQp with the new dithered QP
-        this.lastReportedQp = ditheredQp; // Update last reported QP for potential filtering
-
-        // console.log(`SimpleRateController GetNextQp: bitDebt: ${this.bitDebt.toFixed(0)}, targetFullness: ${this.targetFullnessPercent}%, error: ${bufferError.toFixed(2)}, clampedSizeChangeRatio: ${clampedSizeChangeRatio.toFixed(2)}, qpChange: ${qpChange.toFixed(2)}, nextQp: ${ditheredQp}`);
-        return ditheredQp;
+        this.lastReportedQp = this.currentQp;
+        return this.currentQp;
     }
 
     OnEncodedFrame(timestamp, encodedSizeBytes, qp, isKeyFrame) {
-        this._updateBufferLevel(timestamp);
+        this._updateBufferLevel(timestamp); // Update buffer level first
+
         const encodedSizeBits = encodedSizeBytes * 8;
-        this.bitDebt += encodedSizeBits;
-        // Clamp bitDebt after adding new frame as well
-        this.bitDebt = Math.min(this.bitDebt, this.maxBufferLevelBits);
+        const potentialBitDebt = this.bitDebt + encodedSizeBits;
+        const potentialFullnessPercent = (potentialBitDebt / this.maxBufferLevelBits) * 100;
+        console.log(`OnEncodedFrame: potentialFullnessPercent: ${potentialFullnessPercent.toFixed(1)}%, reencodeThreshold: ${this.reencodeThresholdPercent}%`);
 
-        // Update QP-to-size statistics
-        const targetFrameSizeBits = this.targetBitrate / this.framerate;
-        const actualSizeRatio = encodedSizeBits / targetFrameSizeBits;
+        if (this.reencodeThresholdPercent > 0 && potentialFullnessPercent > this.reencodeThresholdPercent && this.reencodeCount < this.maxReencodeCount) {
+            this.reencodeCount++;
+            // Frame is too large, need to re-encode with higher QP
+            this.minQpForCurrentFrame = Math.max(this.minQpForCurrentFrame, qp + 1);
+            const nextQp = Math.round((this.minQpForCurrentFrame + this.maxQpForCurrentFrame) / 2);
+            this.currentQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
+            this.lastQpAttempt = this.currentQp;
+            console.log(`Re-encode ${this.reencodeCount}/${this.maxReencodeCount}: size ${encodedSizeBytes} too large at QP ${qp}. New QP: ${this.currentQp}`);
+            return { reencode: true, nextQp: this.currentQp };
+        } else {
+            // Frame size is acceptable or max re-encodes reached
+            this.bitDebt += encodedSizeBits;
+            // Clamp bitDebt after adding new frame as well
+            this.bitDebt = Math.min(this.bitDebt, this.maxBufferLevelBits);
 
-        this.avgQp = this.alpha * qp + (1 - this.alpha) * this.avgQp;
-        this.avgSizeRatio = this.alpha * actualSizeRatio + (1 - this.alpha) * this.avgSizeRatio;
+            // Update QP-to-size statistics only on successful encode
+            const targetFrameSizeBits = this.targetBitrate / this.framerate;
+            const actualSizeRatio = encodedSizeBits / targetFrameSizeBits;
+            this.avgQp = this.alpha * qp + (1 - this.alpha) * this.avgQp;
+            this.avgSizeRatio = this.alpha * actualSizeRatio + (1 - this.alpha) * this.avgSizeRatio;
 
-        // console.log(`SimpleRateController OnEncodedFrame: ${isKeyFrame ? 'KEY' : 'DELTA'} size: ${encodedSizeBytes} bytes, QP: ${qp}, actualSizeRatio: ${actualSizeRatio.toFixed(2)}, avgQp: ${this.avgQp.toFixed(2)}, avgSizeRatio: ${this.avgSizeRatio.toFixed(2)}, new debt: ${this.bitDebt.toFixed(0)}`);
+            // Reset re-encode state for the next frame
+            this.reencodeCount = 0;
+            this.lastQpAttempt = -1;
+            this.minQpForCurrentFrame = this.minQp;
+            this.maxQpForCurrentFrame = this.maxQp;
+
+            // console.log(`SimpleRateController OnEncodedFrame: ${isKeyFrame ? 'KEY' : 'DELTA'} size: ${encodedSizeBytes} bytes, QP: ${qp}, actualSizeRatio: ${actualSizeRatio.toFixed(2)}, avgQp: ${this.avgQp.toFixed(2)}, avgSizeRatio: ${this.avgSizeRatio.toFixed(2)}, new debt: ${this.bitDebt.toFixed(0)}`);
+            return { reencode: false };
+        }
     }
 }
