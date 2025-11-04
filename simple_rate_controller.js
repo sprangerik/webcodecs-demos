@@ -8,9 +8,11 @@ class SimpleRateController {
         this.maxBufferLevelMs = maxBufferLevelMs;
         this.targetFullnessPercent = targetFullnessPercent;
 
-        this.bitDebt = 0; // in bits, represents current buffer level
+        // Bit depth in bits, represents current buffer level.
+        // Start at target minus one frame size.
+        this.bitDebt = ((this.maxBufferLevelMs / 1000) * this.targetBitrate) * (this.targetFullnessPercent / 100) - (1000 / initialFramerate) * initialBitrate; 
         this.lastUpdateTime = timestamp;
-        this.currentQp = (this.minQp + this.maxQp) / 2; // Float QP
+        this.currentQp = this.minQp + 0.2 * (this.maxQp - this.minQp); // Float QP
 
         // Calculated buffer levels
         // maxBufferLevelBits: how many bits the buffer can hold corresponds to maxBufferLevelMs at targetBitrate.
@@ -49,6 +51,7 @@ class SimpleRateController {
     }
 
     _qpDiffToSizeRatioMap = new Map([
+        // Rought estimates based on quick AV1 test run.
         // AVG_Frame_Size_Change -> QP_Change
         [0.001798, 62],
         [0.0022725, 61],
