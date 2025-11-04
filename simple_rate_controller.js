@@ -252,7 +252,7 @@ class SimpleRateController {
 
         const currentFullnessPercent = (this.bitDebt / this.maxBufferLevelBits) * 100;
         console.log(`GetNextQp: currentFullnessPercent: ${currentFullnessPercent.toFixed(1)}%, dropThreshold: ${this.frameDropThresholdPercent}%`);
-        if (currentFullnessPercent > this.frameDropThresholdPercent) {
+        if (this.frameDropThresholdPercent > 0 && currentFullnessPercent > this.frameDropThresholdPercent) {
             console.log(`Dropping frame, buffer fullness ${currentFullnessPercent.toFixed(1)}% > ${this.frameDropThresholdPercent}%`);
             // Reset re-encode state for the next frame
             this.reencodeCount = 0;

@@ -178,6 +178,24 @@
                     <input type="range" id="targetFullness" min="0" max="100" step="1" value="30">
                     <span id="targetFullnessValue">30%</span>
                 </div>
+                <div>
+                    <input type="checkbox" id="enableDropReencode">
+                    <label for="enableDropReencode">Enable Frame Drop/Re-encode</label>
+                </div>
+                <div id="dropReencodeSettings" style="display: none;">
+                    <div>
+                        <label for="frameDropThreshold">Drop Threshold (%):</label>
+                        <input type="number" id="frameDropThreshold" value="95" min="0" max="100">
+                    </div>
+                    <div>
+                        <label for="reencodeThreshold">Re-encode Threshold (%):</label>
+                        <input type="number" id="reencodeThreshold" value="85" min="0" max="100">
+                    </div>
+                    <div>
+                        <label for="maxReencodeCount">Max Re-encodes:</label>
+                        <input type="number" id="maxReencodeCount" value="2" min="0" max="10">
+                    </div>
+                </div>
             </div>
             <div>
                 <button id="requestKeyframeButton">Request Keyframe</button>
@@ -185,7 +203,6 @@
         </div>
 
         <div class="graph">
-            <h3>Encoded Bitrate</h3>
             <canvas id="bitrateGraph" width="600" height="350"></canvas>
             <div class="graph-legend">
                 <div class="legend-item">
@@ -226,6 +243,13 @@
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
         const graphCanvas = document.getElementById('bitrateGraph');
         const graphCtx = graphCanvas.getContext('2d');
+
+        // New UI elements for Drop/Re-encode
+        const enableDropReencodeCheckbox = document.getElementById('enableDropReencode');
+        const dropReencodeSettingsDiv = document.getElementById('dropReencodeSettings');
+        const frameDropThresholdInput = document.getElementById('frameDropThreshold');
+        const reencodeThresholdInput = document.getElementById('reencodeThreshold');
+        const maxReencodeCountInput = document.getElementById('maxReencodeCount');
 
         let mediaStream = null;
         let encoder = null;
@@ -514,16 +538,20 @@
                 const kpBuffer = parseFloat(kpBufferSlider.value);
                 const targetFullness = parseInt(targetFullnessSlider.value);
 
-                // Update global variables for maxBufferLevelMs and targetFullnessPercent
-                // These are used in SetRates and other places where the controller is not directly passed
-                maxBufferLevelMs = 600; // This is currently fixed, but could be a slider too
+                maxBufferLevelMs = 600;
                 targetFullnessPercent = targetFullness;
 
+                let frameDropThreshold = -1, reencodeThreshold = -1, maxReencodeCount = -1;
+                if (enableDropReencodeCheckbox.checked) {
+                    frameDropThreshold = parseInt(frameDropThresholdInput.value);
+                    reencodeThreshold = parseInt(reencodeThresholdInput.value);
+                    maxReencodeCount = parseInt(maxReencodeCountInput.value);
+                }
+
                 if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
-                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now, maxBufferLevelMs, targetFullnessPercent, alpha, kpBuffer);
+                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now, maxBufferLevelMs, targetFullnessPercent, alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
                 } else {
-                    // Update parameters that can change dynamically
-                    rateController.SetRates(targetBitrate, framerate, maxBufferLevelMs, targetFullnessPercent, now, alpha, kpBuffer);
+                    rateController.SetRates(targetBitrate, framerate, maxBufferLevelMs, targetFullnessPercent, now, alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
                 }
             } else {
                 rateController = null;
@@ -571,6 +599,8 @@
                         }
                     }
                     if (rateController) {
+                         // The result of OnEncodedFrame is not used here for re-encoding,
+                         // but it updates the internal state of the rate controller.
                          rateController.OnEncodedFrame(performance.now(), chunk.byteLength, currentQpUsed, chunk.type === 'key');
                     }
                 },
@@ -621,7 +651,10 @@
             let frameCounter = 0;
             function processFrame() {
                 reader.read().then(({ done, value }) => {
-                    if (done) return;
+                    if (done || stopButton.disabled) {
+                        if(value) value.close();
+                        return;
+                    }
 
                     const frame = value;
                     if (encoder.state === 'configured') {
@@ -629,6 +662,14 @@
                         let nextQp = -1;
                         if (rateController) {
                             nextQp = rateController.GetNextQp(performance.now(), needsKeyFrame);
+
+                            if (nextQp === -1) {
+                                console.log("Frame dropped by rate controller");
+                                frame.close();
+                                requestAnimationFrame(processFrame);
+                                return;
+                            }
+
                             const codecType = codecSelect.value.split('-')[0];
                             switch (codecType) {
                                 case 'av1': encodeOptions.av1 = { quantizer: nextQp }; break;
@@ -638,15 +679,13 @@
                                 case 'hevc': encodeOptions.hevc = { quantizer: nextQp }; break;
                             }
                         }
-                        currentQpUsed = nextQp; // Store the QP that was actually used
+                        currentQpUsed = nextQp;
                         encoder.encode(frame, encodeOptions);
                         if (needsKeyFrame) needsKeyFrame = false;
                     }
                     frame.close();
 
-                    if (!stopButton.disabled) {
-                        requestAnimationFrame(processFrame);
-                    }
+                    requestAnimationFrame(processFrame);
                 }).catch(e => {
                     console.error("Error reading frame:", e);
                 });
@@ -656,6 +695,7 @@
 
         function stopEncoding() {
             if (frameSource) {
+                // frameSource.cancel(); // This seems to cause issues, so just nullify
                 frameSource = null;
             }
             if (encoder && encoder.state !== 'closed') {
@@ -713,7 +753,13 @@
             if (rateController) {
                 const alpha = parseFloat(alphaSlider.value);
                 const kpBuffer = parseFloat(kpBufferSlider.value);
-                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer);
+                let frameDropThreshold = -1, reencodeThreshold = -1, maxReencodeCount = -1;
+                if (enableDropReencodeCheckbox.checked) {
+                    frameDropThreshold = parseInt(frameDropThresholdInput.value);
+                    reencodeThreshold = parseInt(reencodeThresholdInput.value);
+                    maxReencodeCount = parseInt(maxReencodeCountInput.value);
+                }
+                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
             }
             // Reconfigure for internal mode to update bitrate
             if (rateControlModeSelect.value === 'internal') {
@@ -748,6 +794,15 @@
             targetFullnessValueSpan.textContent = parseInt(targetFullnessSlider.value) + '%';
             updateRateController();
         });
+
+        // Event listeners for new Drop/Re-encode settings
+        enableDropReencodeCheckbox.addEventListener('change', () => {
+            dropReencodeSettingsDiv.style.display = enableDropReencodeCheckbox.checked ? 'block' : 'none';
+            updateRateController();
+        });
+        frameDropThresholdInput.addEventListener('input', updateRateController);
+        reencodeThresholdInput.addEventListener('input', updateRateController);
+        maxReencodeCountInput.addEventListener('input', updateRateController);
 
         requestKeyframeButton.addEventListener('click', () => {
             if (encoder && encoder.state === 'configured') {
