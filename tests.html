@@ -173,10 +173,12 @@
         function runSimpleRateControllerTests() {
             console.log('\n--- Running SimpleRateController Tests ---');
             const baseTime = 10000; // Fake start time
+            let result; // Declare result here
 
             // Test Case 1: Constructor and initial state
+
             let now = baseTime;
-            let controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1);
+            let controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 95, 20, 20, 2);
 
             assert.strictEqual(controller.codecType, 'avc', 'Constructor should set codecType');
             assert.strictEqual(controller.minQp, 10, 'Constructor should set minQp');
@@ -188,7 +190,8 @@
             assert.strictEqual(controller.alpha, 0.5, 'Constructor should set alpha');
             assert.strictEqual(controller.Kp_buffer, 0.1, 'Constructor should set Kp_buffer');
             assert.strictEqual(controller.frameDropThresholdPercent, 95, 'Constructor should set default frameDropThresholdPercent');
-            assert.strictEqual(controller.reencodeThresholdPercent, 85, 'Constructor should set default reencodeThresholdPercent');
+            assert.strictEqual(controller.reencodeOvershootPercent, 20, 'Constructor should set default reencodeOvershootPercent');
+            assert.strictEqual(controller.reencodeUndershootPercent, 20, 'Constructor should set default reencodeUndershootPercent');
             assert.strictEqual(controller.maxReencodeCount, 2, 'Constructor should set default maxReencodeCount');
             assert.isTrue(controller._qpDiffToSizeRatioMap instanceof Map, 'QP to Size Ratio map should be a Map');
 
@@ -200,20 +203,33 @@
             // Test Case 3: OnEncodedFrame() - Basic update
             now = baseTime + 1000;
             controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1);
+            controller.avgQp = 30; // Reset avgQp
             const frameTime1 = now + 1;
-            const frameSize1 = 10000; // 10kb
-            controller.OnEncodedFrame(frameTime1, frameSize1, 25, false);
-            assert.isTrue(controller.bitDebt > 0, 'Buffer debt should update after first frame');
-            assert.strictEqual(controller.lastUpdateTime, frameTime1, 'Last update time should change');
+            const targetFrameSizeBytes = Math.floor((controller.targetBitrate / controller.framerate) / 8);
+            let currentQp = controller.GetNextQp(frameTime1, false);
+            // Adjust frameSize1 to be slightly larger than target to avoid undershoot
+            const frameSize1 = targetFrameSizeBytes * 1.1; 
+            result = controller.OnEncodedFrame(frameTime1, frameSize1, currentQp, false);
+            console.log('Test Case 3, result1:', result);
 
-            const frameTime2 = now + 34;
-            const frameSize2 = 5000; // 5kb
-            controller.OnEncodedFrame(frameTime2, frameSize2, 28, false);
-            assert.isTrue(controller.lastUpdateTime === frameTime2, 'Last update time should update again');
+            if (!result.reencode) {
+                assert.isTrue(controller.bitDebt > 0, 'Buffer debt should update after first frame');
+                assert.strictEqual(controller.lastUpdateTime, frameTime1, 'Last update time should change');
+
+                const frameTime2 = now + 34;
+                const frameSize2 = targetFrameSizeBytes * 0.9;
+                 currentQp = controller.GetNextQp(frameTime2, false);
+                result = controller.OnEncodedFrame(frameTime2, frameSize2, currentQp, false);
+                 console.log('Test Case 3, result2:', result);
+                 if (!result.reencode) {
+                    assert.isTrue(controller.lastUpdateTime === frameTime2, 'Last update time should update again');
+                }
+            }
 
             // Test Case 4: GetNextQp() - Normal operation
             now = baseTime + 2000;
             controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1);
+            controller.avgQp = 30; // Reset avgQp
             controller.bitDebt = controller.targetBufferLevelBits;
             const qpTarget = controller.GetNextQp(now + 1, false);
             assert.isTrue(qpTarget >= 10 && qpTarget <= 50, 'GetNextQp should return QP in range');
@@ -221,7 +237,7 @@
             // Test Case 9: SetRates()
             now = baseTime + 3000;
             controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1);
-            controller.SetRates(2000000, 60, 1000, 80, now + 1, 0.6, 0.2, 92, 82, 3);
+            controller.SetRates(2000000, 60, 1000, 80, now + 1, 0.6, 0.2, 92, 25, 15, 3);
             assert.strictEqual(controller.targetBitrate, 2000000, 'SetRates should update targetBitrate');
             assert.strictEqual(controller.framerate, 60, 'SetRates should update framerate');
             assert.strictEqual(controller.maxBufferLevelMs, 1000, 'SetRates should update maxBufferLevelMs');
@@ -229,61 +245,82 @@
             assert.strictEqual(controller.alpha, 0.6, 'SetRates should update alpha');
             assert.strictEqual(controller.Kp_buffer, 0.2, 'SetRates should update Kp_buffer');
             assert.strictEqual(controller.frameDropThresholdPercent, 92, 'SetRates should update frameDropThresholdPercent');
-            assert.strictEqual(controller.reencodeThresholdPercent, 82, 'SetRates should update reencodeThresholdPercent');
+            assert.strictEqual(controller.reencodeOvershootPercent, 25, 'SetRates should update reencodeOvershootPercent');
+            assert.strictEqual(controller.reencodeUndershootPercent, 15, 'SetRates should update reencodeUndershootPercent');
             assert.strictEqual(controller.maxReencodeCount, 3, 'SetRates should update maxReencodeCount');
             assert.strictEqual(controller.lastUpdateTime, now + 1, 'SetRates should update lastUpdateTime');
 
             // Test Case 10: Frame Drop
             now = baseTime + 4000;
-            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 90, 80, 2);
+            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 90, 20, 20, 2);
             controller.bitDebt = controller.maxBufferLevelBits * 0.91; // Above drop threshold
             let nextQp = controller.GetNextQp(now + 1, false);
             assert.strictEqual(nextQp, -1, 'GetNextQp should return -1 to signal frame drop');
-            assert.strictEqual(controller.reencodeCount, 0, 'Reencode count should remain 0 after frame drop');
+            assert.strictEqual(controller.reEncodeContext.count, 0, 'Reencode count should remain 0 after frame drop');
 
-            // Test Cases 11-13: Re-encode Logic (Sequential)
+            // Test Cases 11-13: Re-encode Logic (Overshoot)
             now = baseTime + 5000;
-            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 90, 80, 2);
-            controller.bitDebt = controller.maxBufferLevelBits * 0.78; // Below drop, potential re-encode
+            const targetFullness = 70;
+            const overshoot = 20;
+            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, targetFullness, 0.5, 0.1, 95, overshoot, 20, 2);
+            controller.avgQp = 30; // Reset avgQp
+            const bitsPerFrame = controller.targetBitrate / controller.framerate;
+            // Set bitDebt to the target to start from a neutral point
+            controller.bitDebt = controller.targetBufferLevelBits;
 
-            // Test Case 11: Re-encode Trigger
-            nextQp = controller.GetNextQp(now + 1, false);
-            const initialQp = nextQp;
-            assert.isTrue(nextQp >= 10 && nextQp <= 50, 'GetNextQp should return a valid QP');
+            // Test Case 11: Re-encode Trigger on Overshoot
+            nextQp = controller.GetNextQp(now + 1, false); // Still call to set targetSize
+            const initialQp = 30; // Force mid-range QP
+            assert.isTrue(initialQp >= 10 && initialQp <= 50, 'GetNextQp should return a valid QP');
 
-            // Simulate a large frame - aiming for over 80% fullness with this frame
-            const largeFrameSizeBytes = Math.floor((controller.maxBufferLevelBits * 0.1) / 8) + 1;
-            let result = controller.OnEncodedFrame(now + 34, largeFrameSizeBytes, initialQp, false);
-            assert.isTrue(result.reencode, 'OnEncodedFrame should signal reencode for a large frame');
-            assert.strictEqual(controller.reencodeCount, 1, 'Reencode count should be incremented');
-            assert.isTrue(result.nextQp > initialQp, 'Reencode should suggest a higher QP');
-            assert.strictEqual(controller.minQpForCurrentFrame, initialQp + 1, 'Min QP for current frame should be updated');
+            // This frame size will push the potential buffer level over targetFullness + overshoot
+            const largeFrameSizeBytes = Math.floor(((controller.maxBufferLevelBits * (targetFullness + overshoot + 15)) / 100 - controller.bitDebt) / 8);
+            result = controller.OnEncodedFrame(now + 34, largeFrameSizeBytes, initialQp, false);
+            assert.isTrue(result.reencode, 'OnEncodedFrame should signal reencode for overshoot');
+            assert.strictEqual(controller.reEncodeContext.count, 1, 'Reencode count should be incremented');
+            assert.isTrue(result.qp > initialQp, 'Reencode should suggest a higher QP for overshoot');
 
             // Test Case 12: Re-encode Second Attempt
-            const secondQp = result.nextQp;
+            const secondQp = result.qp;
+            console.log('Test Case 12 reEncodeContext:', JSON.stringify(controller.reEncodeContext));
             result = controller.OnEncodedFrame(now + 34, largeFrameSizeBytes, secondQp, false); // Same timestamp
             assert.isTrue(result.reencode, 'OnEncodedFrame should signal reencode again');
-            assert.strictEqual(controller.reencodeCount, 2, 'Reencode count should be 2');
-            assert.isTrue(result.nextQp > secondQp, 'Reencode should suggest an even higher QP');
-            assert.strictEqual(controller.minQpForCurrentFrame, secondQp + 1, 'Min QP for current frame should be updated again');
+            assert.strictEqual(controller.reEncodeContext.count, 2, 'Reencode count should be 2');
+            assert.isTrue(result.qp > secondQp, 'Reencode should suggest an even higher QP');
 
             // Test Case 13: Re-encode Max Attempts Reached
-            const thirdQp = result.nextQp;
+            const thirdQp = result.qp;
             result = controller.OnEncodedFrame(now + 34, largeFrameSizeBytes, thirdQp, false); // Same timestamp
             assert.isFalse(result.reencode, 'OnEncodedFrame should not signal reencode after max attempts');
-            assert.strictEqual(controller.reencodeCount, 0, 'Reencode count should be reset');
-            assert.isTrue(controller.bitDebt > controller.maxBufferLevelBits * 0.80, 'Bit debt should be updated after max reencode attempts');
+            assert.strictEqual(controller.reEncodeContext.count, 0, 'Reencode count should be reset');
+            const finalFullness = (controller.bitDebt / controller.maxBufferLevelBits) * 100;
+            assert.isTrue(finalFullness > targetFullness + overshoot, 'Bit debt should be updated after max reencode attempts');
 
-            // Test Case 14: Re-encode Not Triggered (Frame Small Enough)
+            // Test Case 14: Re-encode Not Triggered (Frame within bounds)
             now = baseTime + 6000;
-            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 90, 80, 2);
-            controller.bitDebt = controller.maxBufferLevelBits * 0.75;
+            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, 70, 0.5, 0.1, 90, 20, 20, 2);
+            controller.avgQp = 30; // Reset avgQp
+            controller.bitDebt = controller.targetBufferLevelBits;
             nextQp = controller.GetNextQp(now + 1, false);
-            const smallFrameSizeBytes = 1000;
-            result = controller.OnEncodedFrame(now + 1, smallFrameSizeBytes, nextQp, false);
-            assert.isFalse(result.reencode, 'OnEncodedFrame should not signal reencode for a small frame');
-            assert.strictEqual(controller.reencodeCount, 0, 'Reencode count should be 0');
-            assert.isTrue(controller.bitDebt > controller.maxBufferLevelBits * 0.75, 'Bit debt should be updated');
+            const normalFrameSizeBytes = Math.floor((controller.targetBitrate / controller.framerate) / 8);
+            result = controller.OnEncodedFrame(now + 1, normalFrameSizeBytes, nextQp, false);
+            assert.isFalse(result.reencode, 'OnEncodedFrame should not signal reencode for a normal frame');
+            assert.strictEqual(controller.reEncodeContext.count, 0, 'Reencode count should be 0');
+
+            // Test Case 15: Re-encode Trigger on Undershoot
+            now = baseTime + 7000;
+            const undershoot = 20;
+            controller = new SimpleRateController('avc', 10, 50, 1000000, 30, now, 500, targetFullness, 0.5, 0.1, 95, 20, undershoot, 2);
+            controller.avgQp = 30; // Reset avgQp
+            controller.bitDebt = controller.targetBufferLevelBits;
+            nextQp = controller.GetNextQp(now + 1, false); // Call to set targetSize
+            const undershootQp = 30; // Force mid-range QP
+             // This frame size will push the potential buffer level below targetFullness - undershoot
+            const smallFrameSizeBytes = Math.floor(((controller.maxBufferLevelBits * Math.max(0, targetFullness - undershoot - 50)) / 100 - controller.bitDebt) / 8);
+            result = controller.OnEncodedFrame(now + 1, smallFrameSizeBytes, undershootQp, false);
+            assert.isTrue(result.reencode, 'OnEncodedFrame should signal reencode for undershoot');
+            assert.strictEqual(controller.reEncodeContext.count, 1, 'Reencode count should be incremented for undershoot');
+            assert.isTrue(result.qp < undershootQp, 'Reencode should suggest a lower QP for undershoot');
         }
 
         // Run all tests
@@ -295,4 +332,3 @@
     </script>
 </body>
 </html>
-

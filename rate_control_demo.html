@@ -179,6 +179,7 @@
                     <span id="targetFullnessValue">30%</span>
                 </div>
                 <div>
+
                     <input type="checkbox" id="enableDropReencode">
                     <label for="enableDropReencode">Enable Frame Drop/Re-encode</label>
                 </div>
@@ -188,8 +189,12 @@
                         <input type="number" id="frameDropThreshold" value="95" min="0" max="100">
                     </div>
                     <div>
-                        <label for="reencodeThreshold">Re-encode Threshold (%):</label>
-                        <input type="number" id="reencodeThreshold" value="85" min="0" max="100">
+                        <label for="reencodeOvershootPercent">Re-encode Over Margin (+%):</label>
+                        <input type="number" id="reencodeOvershootPercent" value="20" min="0" max="100">
+                    </div>
+                    <div>
+                        <label for="reencodeUndershootPercent">Re-encode Under Margin (-%):</label>
+                        <input type="number" id="reencodeUndershootPercent" value="20" min="0" max="100">
                     </div>
                     <div>
                         <label for="maxReencodeCount">Max Re-encodes:</label>
@@ -248,7 +253,8 @@
         const enableDropReencodeCheckbox = document.getElementById('enableDropReencode');
         const dropReencodeSettingsDiv = document.getElementById('dropReencodeSettings');
         const frameDropThresholdInput = document.getElementById('frameDropThreshold');
-        const reencodeThresholdInput = document.getElementById('reencodeThreshold');
+        const reencodeOvershootPercentInput = document.getElementById('reencodeOvershootPercent');
+        const reencodeUndershootPercentInput = document.getElementById('reencodeUndershootPercent');
         const maxReencodeCountInput = document.getElementById('maxReencodeCount');
 
         let mediaStream = null;
@@ -542,17 +548,18 @@
                 maxBufferLevelMs = 600;
                 targetFullnessPercent = targetFullness;
 
-                let frameDropThreshold = -1, reencodeThreshold = -1, maxReencodeCount = -1;
+                let frameDropThreshold = -1, reencodeOvershootPercent = -1, reencodeUndershootPercent = -1, maxReencodeCount = -1;
                 if (enableDropReencodeCheckbox.checked) {
                     frameDropThreshold = parseInt(frameDropThresholdInput.value);
-                    reencodeThreshold = parseInt(reencodeThresholdInput.value);
+                    reencodeOvershootPercent = parseInt(reencodeOvershootPercentInput.value);
+                    reencodeUndershootPercent = parseInt(reencodeUndershootPercentInput.value);
                     maxReencodeCount = parseInt(maxReencodeCountInput.value);
                 }
 
                 if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
-                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now, maxBufferLevelMs, targetFullnessPercent, alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
+                    rateController = new SimpleRateController(codecType, minQp, maxQp, targetBitrate, framerate, now, maxBufferLevelMs, targetFullnessPercent, alpha, kpBuffer, frameDropThreshold, reencodeOvershootPercent, reencodeUndershootPercent, maxReencodeCount);
                 } else {
-                    rateController.SetRates(targetBitrate, framerate, maxBufferLevelMs, targetFullnessPercent, now, alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
+                    rateController.SetRates(targetBitrate, framerate, maxBufferLevelMs, targetFullnessPercent, now, alpha, kpBuffer, frameDropThreshold, reencodeOvershootPercent, reencodeUndershootPercent, maxReencodeCount);
                 }
             } else {
                 rateController = null;
@@ -576,7 +583,6 @@
 
             encoder = new VideoEncoder({
                 output: (chunk, meta) => {
-                    bytesSentInInterval += chunk.byteLength;
                     if (meta.decoderConfig && meta.decoderConfig.description) {
                         lastEncodedDescription = meta.decoderConfig.description;
                         if (encoderConfig.codec.startsWith('hev1')) {
@@ -585,20 +591,20 @@
                     }
 
                     const now = performance.now();
-                    let reEncodeInfo = { reEncode: false, qp: -1 };
+                    let reEncodeInfo = { reencode: false, qp: -1 };
                     if (rateController) {
                         reEncodeInfo = rateController.OnEncodedFrame(now, chunk.byteLength, currentQpUsed, chunk.type === 'key');
                     }
 
-
-
-                    if (reEncodeInfo.reEncode) {
+                    if (reEncodeInfo.reencode) {
                         encodeCount++;
                         const encodeOptions = getEncodeOptions(buffers, inputFrameIndex - 1, false, reEncodeInfo.qp); // Pass false for keyFrame on re-encode
-                        console.log(`Re-encoding frame ${currentFrame.timestamp}, attempt ${encodeCount}, QP: ${reEncodeInfo.qp}, ref: ${encodeOptions.referenceBuffers.map(b => b.id)}, update: ${encodeOptions.updateBuffer.id}`);
+                        //console.log('Encode Options:', encodeOptions);
+                        //console.log(`Re-encoding frame ${currentFrame.timestamp}, attempt ${encodeCount}, QP: ${reEncodeInfo.qp}, ref: ${encodeOptions.referenceBuffers.map(b => b.id)}, update: ${encodeOptions.updateBuffer.id}`);
                         currentQpUsed = reEncodeInfo.qp;
                         encoder.encode(currentFrame, encodeOptions);
                     } else {
+                        bytesSentInInterval += chunk.byteLength;
                         frameIdCounter++;
                         const isKeyFrame = (chunk.type === 'key');
                         const dependencies = isKeyFrame ? [] : [lastEncodedFrameId];
@@ -683,45 +689,44 @@
                 bytesSentInInterval = 0;
                 lastBitrateCalcTime = now;
                 drawGraph();
+            }, graphUpdateInterval);
             
-                        }, graphUpdateInterval);
-            
-                        function getEncodeOptions(buffers, frameIndex, keyFrame, qp) {
-                            const encodeOptions = { keyFrame: keyFrame };
-                            const codecType = codecSelect.value.split('-')[0];
-            
-                            if (rateControlModeSelect.value === 'external') {
-                                switch (codecType) {
-                                    case 'av1': encodeOptions.av1 = { quantizer: qp }; break;
-                                    case 'vp9': encodeOptions.vp9 = { quantizer: qp }; break;
-                                    case 'vp8': encodeOptions.vp8 = { quantizer: qp }; break;
-                                    case 'avc': encodeOptions.avc = { quantizer: qp }; break;
-                                    case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
-                                }
-            
-                                                                if (encoderConfig.scalabilityMode === "manual") {
-                                                                    if (keyFrame) {
-                                                                        encodeOptions.updateBuffer = buffers[0];
-                                                                        encodeOptions.referenceBuffers = [];
-                                                                        // console.log('Keyframe: updateBuffer:', buffers[0]);
-                                                                    }
-                                                                    else {
-                                                                        // frameIndex is the index of the current frame being processed (starts at 0)
-                                                                        // Non-keyframes start from frameIndex = 1
-                                                                        const refIndex = (frameIndex - 1) % 2;
-                                                                        const updateIndex = frameIndex % 2;
-                                                                        // console.log(`Frame ${frameIndex}: refIndex: ${refIndex}, updateIndex: ${updateIndex}`);
-                                                                        // console.log('Ref Buffer:', buffers[refIndex]);
-                                                                        // console.log('Update Buffer:', buffers[updateIndex]);
-                                                                        encodeOptions.referenceBuffers = [buffers[refIndex]];
-                                                                        encodeOptions.updateBuffer = buffers[updateIndex];
-                                                                    }
-                                                                }
-                                                            }
-                                                            return encodeOptions;
-                                                        }
-                                
-                                                        function processFrame() {            
+            function getEncodeOptions(buffers, frameIndex, keyFrame, qp) {
+                const encodeOptions = { keyFrame: keyFrame };
+                const codecType = codecSelect.value.split('-')[0];
+
+                if (rateControlModeSelect.value === 'external') {
+                    switch (codecType) {
+                        case 'av1': encodeOptions.av1 = { quantizer: qp }; break;
+                        case 'vp9': encodeOptions.vp9 = { quantizer: qp }; break;
+                        case 'vp8': encodeOptions.vp8 = { quantizer: qp }; break;
+                        case 'avc': encodeOptions.avc = { quantizer: qp }; break;
+                        case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
+                    }
+
+                    if (encoderConfig.scalabilityMode === "manual") {
+                        if (keyFrame) {
+                            encodeOptions.updateBuffer = buffers[0];
+                            encodeOptions.referenceBuffers = [];
+                            // console.log('Keyframe: updateBuffer:', buffers[0]);
+                        }
+                        else {
+                            // frameIndex is the index of the current frame being processed (starts at 0)
+                            // Non-keyframes start from frameIndex = 1
+                            const refIndex = (frameIndex - 1) % 2;
+                            const updateIndex = frameIndex % 2;
+                            // console.log(`Frame ${frameIndex}: refIndex: ${refIndex}, updateIndex: ${updateIndex}`);
+                            // console.log('Ref Buffer:', buffers[refIndex]);
+                            // console.log('Update Buffer:', buffers[updateIndex]);
+                            encodeOptions.referenceBuffers = [buffers[refIndex]];
+                            encodeOptions.updateBuffer = buffers[updateIndex];
+                        }
+                    }
+                }
+                return encodeOptions;
+            }
+
+            function processFrame() {            
             
                 if (currentFrame) {
                     // Still waiting for the previous frame to be fully encoded and acked.
@@ -833,13 +838,14 @@
             if (rateController) {
                 const alpha = parseFloat(alphaSlider.value);
                 const kpBuffer = parseFloat(kpBufferSlider.value);
-                let frameDropThreshold = -1, reencodeThreshold = -1, maxReencodeCount = -1;
+                let frameDropThreshold = -1, reencodeOvershootPercent = -1, reencodeUndershootPercent = -1, maxReencodeCount = -1;
                 if (enableDropReencodeCheckbox.checked) {
                     frameDropThreshold = parseInt(frameDropThresholdInput.value);
-                    reencodeThreshold = parseInt(reencodeThresholdInput.value);
+                    reencodeOvershootPercent = parseInt(reencodeOvershootPercentInput.value);
+                    reencodeUndershootPercent = parseInt(reencodeUndershootPercentInput.value);
                     maxReencodeCount = parseInt(maxReencodeCountInput.value);
                 }
-                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer, frameDropThreshold, reencodeThreshold, maxReencodeCount);
+                rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer, frameDropThreshold, reencodeOvershootPercent, reencodeUndershootPercent, maxReencodeCount);
             }
             // Reconfigure for internal mode to update bitrate
             if (rateControlModeSelect.value === 'internal') {
@@ -881,7 +887,8 @@
             updateRateController();
         });
         frameDropThresholdInput.addEventListener('input', updateRateController);
-        reencodeThresholdInput.addEventListener('input', updateRateController);
+        reencodeOvershootPercentInput.addEventListener('input', updateRateController);
+        reencodeUndershootPercentInput.addEventListener('input', updateRateController);
         maxReencodeCountInput.addEventListener('input', updateRateController);
 
         requestKeyframeButton.addEventListener('click', () => {
