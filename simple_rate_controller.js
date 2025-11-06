@@ -442,7 +442,6 @@ class SimpleRateController {
 
 
             // console.log(`SimpleRateController OnEncodedFrame: ${isKeyFrame ? 'KEY' : 'DELTA'} size: ${encodedSizeBytes} bytes, QP: ${qp}, actualSizeRatio: ${actualSizeRatio.toFixed(2)}, avgQp: ${this.avgQp.toFixed(2)}, avgSizeRatio: ${this.avgSizeRatio.toFixed(2)}, new debt: ${this.bitDebt.toFixed(0)}`);
-            console.log(`bitDebt before return: ${this.bitDebt}`);
             return { reencode: false };
         }
     }
