@@ -28,9 +28,11 @@ class FrameAssembler {
     _decodeAndProcess(encodedFrame) {
         // Only process if not already decoded
         if (this.decodedFrames.has(encodedFrame.frameId)) {
+            console.log(`FrameAssembler: Frame ${encodedFrame.frameId} already decoded`);
             return; // Already processed, prevent duplicate
         }
 
+        console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
         this._clearOldState(encodedFrame.encodedChunk.timestamp);
         this.onReadyToRenderCallback(encodedFrame); // This will trigger decoder.decode()
         this.decodedFrames.set(encodedFrame.frameId, true); // Mark as decoded (true for simplicity)

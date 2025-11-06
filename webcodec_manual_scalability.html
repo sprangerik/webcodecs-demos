@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Webcam Capture and Encode/Decode with Multiple Streams</title>
+<style>
+body {
+  font-family: sans-serif;
+}
+
+#container {
+  display: flex;
+  justify-content: space-around; 
+  align-items: flex-start; /* Align items to the top of the container */
+  padding: 20px;
+}
+
+.video-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 10px;
+}
+
+#right-section {
+  display: flex;
+  flex-direction: column;
+}
+
+#camera-section { /* New style for camera preview section */
+  align-self: center; /* Center this section vertically within the container */
+}
+
+video, canvas {
+  width: 640; 
+  height: 360; 
+  border: 1px solid #ccc;
+  margin-bottom: 5px;
+}
+
+.label {
+  font-size: 14px;
+  color: #666;
+}
+</style>
+</head>
+<body>
+  <button id="startButton">Start Webcam</button>
+    <div id="container">
+      <div id="camera-section" class="video-section"> 
+        <video id="cameraPreview" width="640" height="360" autoplay></video>
+        <div class="label">Camera Preview</div>
+      </div>
+
+      <div id="right-section">
+        <div class="video-section">
+          <canvas id="decodedPreview1" width="640" height="360"></canvas>
+          <div class="label">Temporal Layers {1, 2, 3}</div>
+        </div>
+        <div class="video-section">
+          <canvas id="decodedPreview2" width="640" height="360"></canvas>
+          <div class="label">Temporal Layers {1, 2}</div>
+        </div>
+        <div class="video-section">
+          <canvas id="decodedPreview3" width="640" height="360"></canvas>
+          <div class="label">Temporal Layers 1</div>
+        </div>
+      </div>
+    </div>
+
+  <script>
+    const startButton = document.getElementById('startButton');
+    const cameraPreview = document.getElementById('cameraPreview');
+    const decodedPreviews = [
+      document.getElementById('decodedPreview1'),
+      document.getElementById('decodedPreview2'),
+      document.getElementById('decodedPreview3')
+    ];
+    let mediaStream;
+    let reader;
+    const frameDataMap = new Map();
+
+    // Single encoder and array to hold decoders
+    let videoEncoder;
+    const videoDecoders = [];
+    const codec_type = 'av01.0.04M.08';
+
+
+    startButton.addEventListener('click', async () => {
+      if (startButton.textContent === "Start Webcam") {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } });
+          cameraPreview.srcObject = mediaStream;
+
+          const track = mediaStream.getVideoTracks()[0];
+          const settings = track.getSettings();
+
+          cameraPreview.width = settings.width;
+          cameraPreview.height = settings.height;
+
+          // Create and configure the single encoder
+          videoEncoder = new VideoEncoder({
+            output: async (chunk) => {
+              // Decode the chunk with each decoder
+              for (const decoder of videoDecoders) {
+                decoder.decode(chunk);
+              }
+            },
+            error: (e) => console.error('Encoder error:', e)
+          });
+
+          // Create and configure the three decoders
+          for (let i = 0; i < 3; i++) {
+            const videoDecoder = new VideoDecoder({
+              output: async (frame) => {
+                const timestamp = frame.timestamp;
+                  const frameData = frameDataMap.get(timestamp);
+                  if (frameData) {
+                    // console.log("Retrieved frame data:", frameData);
+
+                    const displayedTemporalIndex = 2 - i;
+                    if (frameData.temporalIndex <= displayedTemporalIndex) {
+                      const ctx = decodedPreviews[i].getContext('2d');
+                      await ctx.drawImage(frame, 0, 0);
+                    }
+                    if (i == 0) {
+                      for (const [key, value] of frameDataMap) {
+                        if (key < timestamp) {
+                          // Old entry, remove.
+                          frameDataMap.delete(key);
+                        }
+                      }
+                    }
+                  }
+
+                  frame.close();
+              },
+              error: (e) => console.error('Decoder error:', e)
+            });
+
+            videoDecoders.push(videoDecoder);
+
+          let config = {
+            codec: codec_type,
+            width: settings.width,
+            height: settings.height,
+            framerate: settings.frameRate
+          };
+            const decoder_support = await VideoDecoder.isConfigSupported(config);
+            if (decoder_support.supported) {
+              await videoDecoder.configure(config);
+            } else {
+              console.error(`${codec_type} decoder not supported`);
+              return;
+            }
+          }
+
+          let config = {
+            codec: codec_type,
+            width: settings.width,
+            height: settings.height,
+            framerate: settings.frameRate,
+            bitrateMode: 'quantizer',
+            scalabilityMode: 'manual',
+            latencyMode: 'realtime',
+            acceleration: 'prefer-software',
+          };
+
+          const encoder_support = await VideoEncoder.isConfigSupported(config);
+          if (encoder_support.supported) {
+            await videoEncoder.configure(config);
+          } else {
+            console.error(`${codec_type} encoder not supported`);
+            return;
+          }
+
+          const processor = new MediaStreamTrackProcessor(track);
+          reader = processor.readable.getReader();
+
+          startButton.textContent = "Stop Camera";
+
+          (async function processFrames() {
+            const buffers = videoEncoder.getAllFrameBuffers();
+            let index = 0;
+            while (true) {
+              const { value: frame, done } = await reader.read();
+              if (done) break;
+
+              const ti = index % 4;
+
+              const timestamp = frame.timestamp;
+              frameDataMap.set(timestamp, {
+                isKeyFrame: (index == 0),
+                temporalIndex: ti
+              });
+
+              let encode_options = {
+                keyFrame: (index == 0),
+                av1: {quantizer: 42},
+                referenceBuffers: []
+              };
+
+              if (ti == 0) {
+                encode_options.updateBuffer = buffers[0];
+                encode_options.referenceBuffers = [buffers[0]];
+              } else if (ti == 1) {
+                encode_options.referenceBuffers = [buffers[0]];
+              } else if (ti == 2) {
+                encode_options.updateBuffer = buffers[1];
+                encode_options.referenceBuffers = [buffers[0]];
+              } else if (ti == 3) {
+                encode_options.referenceBuffers = [buffers[1], buffers[0]];
+              } else {
+                alert("nah");
+              }
+
+              await videoEncoder.encode(frame, encode_options);
+
+              frame.close();
+              index++;
+            }
+          })();
+
+        } catch (e) {
+          console.error('Error accessing webcam:', e);
+        }
+      } else {
+        reader.cancel(); // Stop reading frames
+        
+        // Close encoders and decoders
+        videoEncoder.close();
+        for (const decoder of videoDecoders) {
+          decoder.close();
+        }
+        videoDecoders.length = 0;
+
+        // Stop the media stream and reset video elements
+        mediaStream.getTracks().forEach(track => track.stop());
+        cameraPreview.srcObject = null;
+        for (const preview of decodedPreviews) {
+            preview.getContext('2d').clearRect(0, 0, preview.width, preview.height);
+        }
+        
+        startButton.textContent = "Start Webcam"; // Reset button text
+      }
+    });
+  </script>
+</body>
+</html>
