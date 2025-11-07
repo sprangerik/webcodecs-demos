@@ -4,10 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebCodecs LTR Demo</title>
+    <link rel="icon" href="data:,">
     <style>
         body {
             font-family: sans-serif;
-            margin: 20px;
+            margin: 1em;
             background-color: #f4f4f4;
             color: #333;
         }
@@ -15,33 +16,40 @@
             text-align: center;
             color: #0056b3;
         }
-        .videos {
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 1em;
+            height: 85vh; /* Reduced height to prevent videos from being too large */
+        }
+        .quadrant {
             display: flex;
-            justify-content: space-around;
-            margin-bottom: 20px;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: #fff;
+            padding: 1em;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
         }
-        video {
+        video, canvas {
             border: 1px solid #ccc;
             background-color: #000;
-        }
-        #decodedCanvas {
-            border: 1px solid #ccc;
-            background-color: #000;
+            width: 100%;
+            height: auto;
+            max-height: 100%;
         }
         #rawVideo {
             transform: scaleX(-1);
         }
-        .layout-container {
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 20px;
-        }
         .settings {
-            background-color: #fff;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            width: 90%;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
         .settings h2 {
             margin-top: 0;
@@ -64,6 +72,7 @@
         }
         .controls {
             text-align: center;
+            margin-top: 1em; /* Add margin to separate from the grid */
         }
         button {
             padding: 10px 20px;
@@ -81,6 +90,16 @@
             background-color: #cccccc;
             cursor: not-allowed;
         }
+        .view-label {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
         .highlight-warning {
             background-color: red;
             color: white;
@@ -94,27 +113,40 @@
 <body>
     <h1>WebCodecs LTR Demo</h1>
 
-    <div class="videos">
-        <video id="rawVideo" width="640" height="480" autoplay muted playsinline></video>
-        <canvas id="decodedCanvas" width="640" height="480"></canvas>
-    </div>
-
-    <div class="layout-container">
-        <div class="settings">
-            <h2>Settings</h2>
-            <div>
-                <label for="codec">Codec:</label>
-                <select id="codec">
-                </select>
+    <div class="main-container">
+        <div class="quadrant">
+            <video id="rawVideo" autoplay muted playsinline></video>
+            <div class="view-label">Self View</div>
+        </div>
+        <div class="quadrant">
+            <canvas id="standardCanvas"></canvas>
+            <div class="view-label">Standard View</div>
+        </div>
+        <div class="quadrant">
+            <div class="settings">
+                <h2>Settings</h2>
+                <div>
+                    <label for="codec">Codec:</label>
+                    <select id="codec"></select>
+                </div>
+                <div>
+                    <label for="encoderBitrate">Encoder Target Bitrate (kbps):</label>
+                    <input type="range" id="encoderBitrate" min="100" max="2500" value="1000">
+                    <span id="encoderBitrateValue">1000 kbps</span>
+                </div>
+                <div>
+                    <label for="transportBitrate">Transport Limit (kbps):</label>
+                    <input type="range" id="transportBitrate" min="100" max="2500" value="1000">
+                    <span id="transportBitrateValue">1000 kbps</span>
+                </div>
+                <div>
+                    <button id="requestKeyframeButton">Request Keyframe</button>
+                </div>
             </div>
-            <div>
-                <label for="transportBitrate">Transport Bitrate (kbps):</label>
-                <input type="range" id="transportBitrate" min="100" max="2500" value="1000">
-                <span id="transportBitrateValue">1000 kbps</span>
-            </div>
-            <div>
-                <button id="requestKeyframeButton">Request Keyframe</button>
-            </div>
+        </div>
+        <div class="quadrant">
+            <canvas id="decodedCanvas"></canvas>
+            <div class="view-label">LTR View</div>
         </div>
     </div>
 
@@ -129,18 +161,24 @@
 
     <script src="simple_rate_controller.js"></script>
     <script src="ltr_reference_controller.js"></script>
+\
     <script src="simulated_frame_transport.js"></script>
     <script src="frame_assembler.js"></script>
     <script src="encoded_frame.js"></script>
+    <script src="frame_metadata_store.js"></script>
     <script>
         const rawVideo = document.getElementById('rawVideo');
         const decodedCanvas = document.getElementById('decodedCanvas');
         const decodedCtx = decodedCanvas.getContext('2d');
+        const standardCanvas = document.getElementById('standardCanvas');
+        const standardCtx = standardCanvas.getContext('2d');
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
         const codecSelect = document.getElementById('codec');
         const transportBitrateSlider = document.getElementById('transportBitrate');
         const transportBitrateValue = document.getElementById('transportBitrateValue');
+        const encoderBitrateSlider = document.getElementById('encoderBitrate');
+        const encoderBitrateValue = document.getElementById('encoderBitrateValue');
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
 
         let mediaStream = null;
@@ -158,15 +196,22 @@
         let frameAssembler = null;
         let currentQpUsed = -1;
         let decoderConfiguredWithDescription = false;
+        let frameMetadataStore = null;
 
         // Hardcoded Rate Control Parameters
         const RC_MIN_QP = 10;
         const RC_MAX_QP = 50;
-        const RC_TARGET_BITRATE = 1000000; // 1 Mbps
         const RC_ALPHA = 0.5;
         const RC_KP_BUFFER = 0.1;
         const RC_TARGET_FULLNESS = 30;
         const RC_MAX_BUFFER_LEVEL_MS = 600;
+
+        function updateRateController() {
+            if (!ltrController || !ltrController.simpleRateController) return;
+            const newBitrate = parseInt(encoderBitrateSlider.value) * 1000;
+            ltrController.simpleRateController.SetRates(newBitrate, framerate, RC_MAX_BUFFER_LEVEL_MS, RC_TARGET_FULLNESS, performance.now(), RC_ALPHA, RC_KP_BUFFER);
+        }
+
 
         async function populateCodecList() {
             codecSelect.innerHTML = ''; // Clear existing options
@@ -236,8 +281,8 @@
 
             let encoderConfig = {
                 codec: '',
-                width: 640,
-                height: 480,
+                width: rawVideo.videoWidth,
+                height: rawVideo.videoHeight,
                 framerate: framerate,
                 bitrateMode: "quantizer",
                 scalabilityMode: "manual",
@@ -289,7 +334,6 @@
             }
             return decoderConfig;
         }
-
         function getQpRange(codecType) {
             if (codecType === 'avc' || codecType === 'hevc') {
                 return { min: 0, max: 51 };
@@ -308,11 +352,21 @@
             const encoderConfig = getEncoderConfig();
             lastConfiguredCodec = encoderConfig.codec;
             decoderConfiguredWithDescription = false;
+            frameMetadataStore = new FrameMetadataStore();
 
             encoder = new VideoEncoder({
                 output: async (chunk, meta) => {
-                    console.log(`--- Encoder Output --- type: ${chunk.type}, size: ${chunk.byteLength}, ts: ${chunk.timestamp}`);
-                    console.log("Encoder meta:", meta);
+                    // console.log(`--- Encoder Output --- type: ${chunk.type}, size: ${chunk.byteLength}, ts: ${chunk.timestamp}`);
+                    // console.log("Encoder meta:", meta);
+
+                    const frameMetadata = frameMetadataStore.getFrameMetadata(chunk.timestamp);
+                    // if (frameMetadata) {
+                    //     console.log(`Encoded frame ts: ${chunk.timestamp}, size: ${chunk.byteLength}, type: ${chunk.type}, QP: ${frameMetadata.qp}, options:`, frameMetadata.encodeOptions);
+                    //     frameMetadataStore.removeFrameMetadata(chunk.timestamp);
+                    // } else {
+                    //     console.warn(`No metadata found for encoded frame ts: ${chunk.timestamp}`);
+                    // }
+                    frameMetadataStore.pruneOldMetadata(chunk.timestamp);
 
                     if (!decoder) { // Initialize decoder on first output
                         console.log("Initializing and configuring decoder for the first time.");
@@ -323,10 +377,10 @@
 
                         decoder = new VideoDecoder({
                             output: (frame) => {
-                                console.log(`--- Decoder Output --- frame timestamp: ${frame.timestamp}, displayWidth: ${frame.displayWidth}, displayHeight: ${frame.displayHeight}`);
+                                // console.log(`--- Decoder Output --- frame timestamp: ${frame.timestamp}, displayWidth: ${frame.displayWidth}, displayHeight: ${frame.displayHeight}`);
                                 try {
+                                    standardCtx.drawImage(frame, 0, 0, standardCanvas.width, standardCanvas.height);
                                     decodedCtx.drawImage(frame, 0, 0, decodedCanvas.width, decodedCanvas.height);
-                                    console.log('--- Decoder Output --- drawImage called successfully');
                                 } catch (e) {
                                     console.error('--- Decoder Output --- Error in drawImage:', e);
                                 }
@@ -341,7 +395,7 @@
                             console.log("Decoder configured successfully.");
 
                             frameAssembler = new FrameAssembler((encodedFrame) => {
-                                console.log(`--- FrameAssembler callback --- decoder.state: ${decoder.state}, chunk type: ${encodedFrame.encodedChunk.type}, size: ${encodedFrame.encodedChunk.byteLength}`);
+                                // console.log(`--- FrameAssembler callback --- decoder.state: ${decoder.state}, chunk type: ${encodedFrame.encodedChunk.type}, size: ${encodedFrame.encodedChunk.byteLength}`);
                                 if (decoder.state === 'configured') {
                                     try {
                                         decoder.decode(encodedFrame.encodedChunk);
@@ -390,14 +444,19 @@
                     frameIdCounter++;
                     const isKeyFrame = (chunk.type === 'key');
                     const dependencies = isKeyFrame ? [] : [lastEncodedFrameId];
+
                     const encodedFrame = new EncodedFrame(chunk, frameIdCounter, dependencies, chunk.timestamp);
                     lastEncodedFrameId = frameIdCounter;
 
+                    if (ltrController && ltrController.simpleRateController) {
+
+                        ltrController.simpleRateController.OnEncodedFrame(performance.now(), chunk.byteLength, currentQpUsed, isKeyFrame);
+                    } else {
+                        console.log('Skipping OnEncodedFrame because ltrController or simpleRateController is missing.');
+                    }
+
                     if (transport) {
                         transport.SendFrame(encodedFrame, meta);
-                    }
-                    if (ltrController && ltrController.simpleRateController) {
-                        ltrController.simpleRateController.OnEncodedFrame(chunk.timestamp, chunk.byteLength, currentQpUsed, isKeyFrame);
                     }
                 },
                 error: (e) => {
@@ -408,6 +467,7 @@
             await encoder.configure(encoderConfig);
 
             const buffers = await encoder.getAllFrameBuffers();
+            console.log('Number of available frame buffers:', buffers.length);
             const selectedCodecOption = codecSelect.value;
             const [codecType, accel] = selectedCodecOption.split('-');
 
@@ -415,13 +475,16 @@
                 codecType,
                 RC_MIN_QP,
                 RC_MAX_QP,
-                RC_TARGET_BITRATE,
+                parseInt(encoderBitrateSlider.value) * 1000,
                 framerate,
                 performance.now(),
                 RC_MAX_BUFFER_LEVEL_MS,
                 RC_TARGET_FULLNESS,
                 RC_ALPHA,
-                RC_KP_BUFFER
+                RC_KP_BUFFER,
+                -1, // frameDropThresholdPercent
+                -1, // reencodeOvershootPercent
+                -1  // reencodeUndershootPercent
             );
             // Disable drop/re-encode logic
             simpleRateController.ShouldDropFrame = () => false;
@@ -432,7 +495,7 @@
             const reader = frameSource.getReader();
 
             function processFrame() {
-                console.log("processFrame called");
+                // console.log("processFrame called");
                 if (stopButton.disabled) return;
                 reader.read().then(({ done, value }) => {
                     if (done || stopButton.disabled) {
@@ -445,7 +508,6 @@
                         const keyFrame = needsKeyFrame || frameIdCounter === 0;
                         const encodeOptions = ltrController.GetNextEncodeOptions(keyFrame);
                         const qp = ltrController.simpleRateController.GetNextQp(performance.now(), keyFrame);
-                        encodeOptions.qp = qp;
                         currentQpUsed = qp;
 
                         const codecType = codecSelect.value.split('-')[0];
@@ -456,18 +518,17 @@
                             case 'avc': encodeOptions.avc = { quantizer: qp }; break;
                             case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
                         }
-                        console.log("Encode options:", encodeOptions);
-                        console.log(`Encoder queue size: ${encoder.encodeQueueSize}`);
-                        encoder.encode(frame, encodeOptions);
-                        frame.close(); // Close the frame after encoding
-                        if (needsKeyFrame) needsKeyFrame = false;
-
-                        if (ltrController && ltrController.simpleRateController) {
-                            // We don't know the size yet, so we'll call OnEncodedFrame in the encoder output callback
+                        // console.log("Encode options:", encodeOptions);
+                        // console.log(`Encoder queue size: ${encoder.encodeQueueSize}`);
+                        if (frameMetadataStore) {
+                            frameMetadataStore.addFrameMetadata(frame.timestamp, { qp: currentQpUsed, encodeOptions: { ...encodeOptions } });
                         }
-                    } else {
-                         frame.close();
-                    }
+                                                encoder.encode(frame, encodeOptions);
+                                                frame.close(); // Close the frame after encoding
+                                                if (needsKeyFrame) needsKeyFrame = false;
+                                            } else {
+                                                 frame.close();
+                                            }
 
                     if (!stopButton.disabled) {
                         requestAnimationFrame(processFrame);
@@ -477,18 +538,15 @@
                     if (!stopButton.disabled) requestAnimationFrame(processFrame);
                 });
             }
+
             requestAnimationFrame(processFrame);
-        }
-
-        async function stopEncoding() {
-
-
         }
 
         async function stopEncoding() {
             if (frameSource) {
                 frameSource = null;
             }
+
             if (encoder && encoder.state !== 'closed') {
                 try {
                     await encoder.flush();
@@ -514,10 +572,15 @@
                 transport = null;
             }
             decodedCtx.clearRect(0, 0, decodedCanvas.width, decodedCanvas.height);
+            standardCtx.clearRect(0, 0, standardCanvas.width, standardCanvas.height);
             ltrController = null;
             if (frameAssembler) {
                 frameAssembler.reset();
                 frameAssembler = null;
+            }
+            if (frameMetadataStore) {
+                frameMetadataStore.clear();
+                frameMetadataStore = null;
             }
             needsKeyFrame = false;
             frameIdCounter = 0;
@@ -553,6 +616,11 @@
             }
         });
 
+        encoderBitrateSlider.addEventListener('input', () => {
+            encoderBitrateValue.textContent = encoderBitrateSlider.value + ' kbps';
+            updateRateController();
+        });
+
         codecSelect.addEventListener('change', () => {
             reconfigureEncoder();
         });
@@ -568,9 +636,17 @@
             startButton.disabled = true;
             stopButton.disabled = true;
             try {
-                mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+                mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 }, audio: false });
                 rawVideo.srcObject = mediaStream;
                 await rawVideo.play();
+
+                const videoWidth = rawVideo.videoWidth;
+                const videoHeight = rawVideo.videoHeight;
+                [decodedCanvas, standardCanvas].forEach(canvas => {
+                    canvas.width = videoWidth;
+                    canvas.height = videoHeight;
+                });
+
                 stopButton.disabled = false;
                 startEncoding();
             } catch (err) {

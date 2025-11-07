@@ -29,10 +29,11 @@ class LtrReferenceController {
                 encodeOptions.referenceBuffers = [this.buffers[refIndex]];
                 encodeOptions.updateBuffer = this.buffers[updateIndex];
             }
+                }
+        
+                this.frameIndex++;
+                // console.log("LtrReferenceController.GetNextEncodeOptions:", encodeOptions);
+                return encodeOptions;
+            }
         }
-
-        this.frameIndex++;
-        console.log("LtrReferenceController.GetNextEncodeOptions:", encodeOptions);
-        return encodeOptions;
-    }
-}
+        

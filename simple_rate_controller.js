@@ -17,7 +17,7 @@ class SimpleRateController {
 
         // Bit depth in bits, represents current buffer level.
         // Start at target minus one frame size.
-        this.bitDebt = ((this.maxBufferLevelMs / 1000) * this.targetBitrate) * (this.targetFullnessPercent / 100) - (1000 / initialFramerate) * initialBitrate; 
+        this.bitDebt = ((this.maxBufferLevelMs / 1000) * this.targetBitrate) * (this.targetFullnessPercent / 100) - (this.targetBitrate / this.framerate); 
         this.lastUpdateTime = timestamp;
         this.avgQp = this.minQp + 0.5 * (this.maxQp - this.minQp); // Initialize to mid-range
 
@@ -284,20 +284,19 @@ class SimpleRateController {
     GetNextQp(timestamp, isKeyFrame) {
         this._updateBufferLevel(timestamp);
 
+        // console.log(`[${performance.now().toFixed(2)}] GetNextQp: bitDebt: ${this.bitDebt.toFixed(0)}, targetBufferLevel: ${this.targetBufferLevelBits.toFixed(0)}, fullness: ${(this.bitDebt / this.maxBufferLevelBits * 100).toFixed(1)}%`);
+
+        // Reset re-encode state for the new frame, before any checks.
+        this._resetReencodeContext();
+
         const currentFullnessPercent = (this.bitDebt / this.maxBufferLevelBits) * 100;
 
         // console.log(`GetNextQp: currentFullnessPercent: ${currentFullnessPercent.toFixed(1)}%, dropThreshold: ${this.frameDropThresholdPercent}%`);
         if (this.frameDropThresholdPercent > 0 && currentFullnessPercent > this.frameDropThresholdPercent) {
-            console.log(`Dropping frame, buffer fullness ${currentFullnessPercent.toFixed(1)}% > ${this.frameDropThresholdPercent}%`);
+            // console.log(`Dropping frame, buffer fullness ${currentFullnessPercent.toFixed(1)}% > ${this.frameDropThresholdPercent}%`);
             // Reset re-encode state for the next frame
             this._resetReencodeContext();
             return -1; // Signal frame drop
-        }
-
-        if (this.reEncodeContext.count !== 0) {
-            console.log('Re-encode context encountered when none expected. Dropping.');
-            return -1; // Signal frame drop
-            // this._resetReencodeContext();
         }
 
         // Calculate buffer fullness error
@@ -315,6 +314,7 @@ class SimpleRateController {
 
         // Calculate the desired frame size in bits
         const desiredFrameSizeBits = targetFrameSizeBits - (this.Kp_buffer * bufferError);
+        // console.log(`[${performance.now().toFixed(2)}] GetNextQp: targetFrameSize: ${targetFrameSizeBits.toFixed(0)}, desiredFrameSize: ${desiredFrameSizeBits.toFixed(0)}`);
 
         // Calculate the ratio of desired frame size to the current average frame size
         // This is the 'AVG_Frame_Size_Change' that _qpChangeFromSizeRatioChange expects
@@ -339,6 +339,7 @@ class SimpleRateController {
 
         // Dithered rounding
         const qp = this._ditherQp(qpToDither);
+        // console.log(`[${performance.now().toFixed(2)}] GetNextQp: qp: ${qp}`);
 
         this._resetReencodeContext();
         this.reEncodeContext.targetSize = desiredFrameSizeBits / 8;
@@ -364,14 +365,14 @@ class SimpleRateController {
                     triggerReencode = true;
                     reason = "overshoot";
                 } else {
-                    console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
+                    // console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
                 }
             } else if (this.reencodeUndershootPercent > 0 && deviationPercent < -this.reencodeUndershootPercent) {
                 if (qp > this.minQp) {
                     triggerReencode = true;
                     reason = "undershoot";
                 } else {
-                    console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
+                    // console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
                 }
             }
         }
@@ -424,6 +425,7 @@ class SimpleRateController {
         } else {
             // Frame size is acceptable or max re-encodes reached
             this.bitDebt += encodedSizeBits;
+            // console.log(`[${performance.now().toFixed(2)}] OnEncodedFrame: encodedSize: ${encodedSizeBytes}, new bitDebt: ${this.bitDebt.toFixed(0)}`);
             // Clamp bitDebt after adding new frame as well
             this.bitDebt = Math.min(this.bitDebt, this.maxBufferLevelBits);
 
