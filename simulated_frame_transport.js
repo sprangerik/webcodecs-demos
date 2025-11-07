@@ -6,6 +6,7 @@ class SimulatedFrameTransport {
         this.isDelivering = false;
         this.timeoutId = null;
         this.keyFrameNeeded = false;
+        this.nextAvailableSendTime = 0;
     }
 
     SetRate(bandwidthBps) {
@@ -37,13 +38,23 @@ class SimulatedFrameTransport {
         this.isDelivering = true;
         const { encodedFrame, meta } = this.frameQueue.shift();
 
+        const now = performance.now();
+        const frameSizeBits = encodedFrame.encodedChunk.byteLength * 8;
+        const transmissionTimeMs = (frameSizeBits / this.bandwidthBps) * 1000;
+
+        const startTime = Math.max(now, this.nextAvailableSendTime);
+        const finishTime = startTime + transmissionTimeMs;
+        const delayMs = Math.max(0, finishTime - now);
+
+        this.nextAvailableSendTime = finishTime;
+
         this.timeoutId = setTimeout(() => {
             if (this.frameReceiverCallback) {
                 this.frameReceiverCallback(encodedFrame, meta);
             }
             // Start processing the next frame only after this one is delivered.
             this.DeliverNextFrame();
-        }, 0);
+        }, delayMs);
     }
 
     Stop() {
@@ -54,5 +65,6 @@ class SimulatedFrameTransport {
         this.frameQueue = [];
         this.isDelivering = false;
         this.keyFrameNeeded = false;
+        this.nextAvailableSendTime = 0;
     }
 }
