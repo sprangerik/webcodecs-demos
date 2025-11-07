@@ -7,6 +7,7 @@ class FrameAssembler {
     }
 
     OnFrameReceived(encodedFrame) {
+        console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
         if (this._canDecode(encodedFrame)) {
             this._decodeAndProcess(encodedFrame);
         } else {
@@ -21,8 +22,9 @@ class FrameAssembler {
         if (encodedFrame.encodedChunk.type === 'key') {
             return true;
         }
-        // Check if all dependencies are in decodedFrames
-        return encodedFrame.dependencies.every(depId => this.decodedFrames.has(depId));
+        const depsMet = encodedFrame.dependencies.every(depId => this.decodedFrames.has(depId));
+        console.log(`FrameAssembler: _canDecode - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, depsMet: ${depsMet}`);
+        return depsMet;
     }
 
     _decodeAndProcess(encodedFrame) {
