@@ -11,7 +11,7 @@ class FrameAssembler {
         // console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
         
         if (!encodedFrame.isLtr && encodedFrame.frameId <= this.lastDecodedFrameId) {
-            console.warn(`FrameAssembler: Discarding old non-LTR frame ${encodedFrame.frameId}, last decoded was ${this.lastDecodedFrameId}`);
+            // console.warn(`FrameAssembler: Discarding old non-LTR frame ${encodedFrame.frameId}, last decoded was ${this.lastDecodedFrameId}`);
             return;
         }
 
@@ -41,7 +41,7 @@ class FrameAssembler {
             return; // Already processed, prevent duplicate
         }
 
-        console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
+        // console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
         this._clearOldState(encodedFrame.encodedChunk.timestamp);
         this.onReadyToRenderCallback(encodedFrame); // This will trigger decoder.decode()
         this.decodedFrames.set(encodedFrame.frameId, true); // Mark as decoded (true for simplicity)
@@ -56,10 +56,12 @@ class FrameAssembler {
         }
 
         // Check buffered frames that might now be decodable
-        // Iterate over a copy to avoid issues with map modification during iteration
-        const bufferedFramesCopy = new Map(this.bufferedFrames);
-        for (const [frameId, bufferedFrame] of bufferedFramesCopy.entries()) {
-            if (this._canDecode(bufferedFrame)) {
+        // Sort buffered frames by frameId to ensure in-order decoding
+        const sortedBufferedFrames = Array.from(this.bufferedFrames.values()).sort((a, b) => a.frameId - b.frameId);
+
+        for (const bufferedFrame of sortedBufferedFrames) {
+            // Check if the frame is still in the buffer, as a previous decode might have processed it
+            if (this.bufferedFrames.has(bufferedFrame.frameId) && this._canDecode(bufferedFrame)) {
                 this._decodeAndProcess(bufferedFrame); // Recursive call
             }
         }

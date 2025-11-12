@@ -131,13 +131,13 @@
                 </div>
                 <div>
                     <label for="encoderBitrate">Encoder Target Bitrate (kbps):</label>
-                    <input type="range" id="encoderBitrate" min="100" max="2500" value="450">
-                    <span id="encoderBitrateValue">450 kbps</span>
+                    <input type="range" id="encoderBitrate" min="100" max="2500" value="1000">
+                    <span id="encoderBitrateValue">1000 kbps</span>
                 </div>
                 <div>
                     <label for="transportBitrate">Transport Limit (kbps):</label>
-                    <input type="range" id="transportBitrate" min="100" max="2500" value="1000">
-                    <span id="transportBitrateValue">1000 kbps</span>
+                    <input type="range" id="transportBitrate" min="100" max="2500" value="1500">
+                    <span id="transportBitrateValue">1500 kbps</span>
                 </div>
                 <div>
                     <label for="rttDelay">RTT Delay (ms):</label>
@@ -145,8 +145,8 @@
                 </div>
                 <div>
                     <label for="lossPercent">Loss Percent:</label>
-                    <input type="range" id="lossPercent" min="0" max="100" value="5">
-                    <span id="lossPercentValue">5%</span>
+                    <input type="range" id="lossPercent" min="0" max="100" value="12">
+                    <span id="lossPercentValue">12%</span>
                 </div>
                 <div>
                     <button id="requestKeyframeButton">Request Keyframe</button>
@@ -446,7 +446,12 @@
                                     frame.close();
                                 }
                             },
-                            error: (e) => { console.error(`[${pipeline.name}] Decoder Error:`, e); }
+                            error: (e) => { 
+                                console.error(`[${pipeline.name}] Decoder Error:`, e);
+                                needsKeyFrame = true;
+                                if (pipeline.frameAssembler) pipeline.frameAssembler.decoderNeedsKeyFrame = true;
+                                console.warn(`[${pipeline.name}] Decoder error, requesting keyframe.`);
+                            }
                         });
                         
                                                 try {
@@ -493,14 +498,14 @@
                     }
 
                     const encodedFrame = new EncodedFrame(chunk, frameId, dependencies, chunk.timestamp, isLtr);
-                    console.log(`[${pipeline.name}] Created EncodedFrame ${frameId} (ts: ${chunk.timestamp}), type: ${chunk.type}, isLtr: ${isLtr}, dependencies: [${dependencies}]`);
+                    // console.log(`[${pipeline.name}] Created EncodedFrame ${frameId} (ts: ${chunk.timestamp}), type: ${chunk.type}, isLtr: ${isLtr}, dependencies: [${dependencies}]`);
                     pipeline.lastEncodedFrameId = frameId;
 
                     pipeline.rateController.OnEncodedFrame(performance.now(), chunk.byteLength, pipeline.currentQpUsed, isKeyFrame);
 
                     if (pipeline.transport) {
                         // console.log(`[${pipeline.name}] Encoder output, ts: ${chunk.timestamp}, type: ${chunk.type}, size: ${chunk.byteLength}`);
-                        if (isLtr) console.log(`[${pipeline.name}] Sending LTR frame ${encodedFrame.frameId} (ts: ${chunk.timestamp})`);
+                        // if (isLtr) console.log(`[${pipeline.name}] Sending LTR frame ${encodedFrame.frameId} (ts: ${chunk.timestamp})`);
                         pipeline.transport.SendFrame(encodedFrame, meta);
                     } else {
                         console.warn(`[${pipeline.name}] Transport not ready!`);
