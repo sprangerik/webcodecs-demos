@@ -43,7 +43,19 @@ class SimulatedFrameTransport {
                 const shouldDrop = Math.random() * 100 < this.lossPercent;
                 if (shouldDrop) {
                     console.log(`SimTransport: Dropping frame ts: ${encodedFrame.timestamp}`);
-                    // Retransmission logic removed for now
+                    // Simulate NACK and retransmission
+                    const nowAfterDrop = performance.now();
+                    const earliestReturnTime = Math.max(nowAfterDrop, this.nextAvailableReturnTime);
+                    const returnTripDelay = (this.rttDelayMs / 2);
+                    this.nextAvailableReturnTime = earliestReturnTime + returnTripDelay;
+                    const retransmitDelay = (earliestReturnTime - nowAfterDrop) + returnTripDelay;
+
+                    setTimeout(() => {
+                        if (this.isRunning) {
+                            console.log(`SimTransport: Retransmitting frame ts: ${encodedFrame.timestamp}`);
+                            this.SendFrame(encodedFrame, meta);
+                        }
+                    }, retransmitDelay);
                 } else {
                     this.onFrameReceived(encodedFrame, meta);
                 }
