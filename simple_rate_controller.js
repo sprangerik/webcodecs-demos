@@ -271,9 +271,17 @@ class SimpleRateController {
         this.Kp_buffer = newKpBuffer;
 
         if (newFrameDropThresholdPercent > 0) this.frameDropThresholdPercent = newFrameDropThresholdPercent;
+        else this.frameDropThresholdPercent = -1;
         if (newReencodeOvershootPercent > 0) this.reencodeOvershootPercent = newReencodeOvershootPercent;
+        else this.reencodeOvershootPercent = -1;
         if (newReencodeUndershootPercent > 0) this.reencodeUndershootPercent = newReencodeUndershootPercent;
-        if (newMaxReencodeCount > 0) this.maxReencodeCount = newMaxReencodeCount;
+        else this.reencodeUndershootPercent = -1;
+        if (newMaxReencodeCount >= 0) this.maxReencodeCount = newMaxReencodeCount;
+        else this.maxReencodeCount = -1;
+
+        if (this.maxReencodeCount === -1) {
+            this._resetReencodeContext();
+        }
 
         this.maxBufferLevelBits = (this.maxBufferLevelMs / 1000) * this.targetBitrate;
         this.targetBufferLevelBits = this.maxBufferLevelBits * (this.targetFullnessPercent / 100);
@@ -359,7 +367,7 @@ class SimpleRateController {
         let triggerReencode = false;
         let reason = "";
     
-        if (!isKeyFrame && this.reEncodeContext.targetSize > 0) {
+        if (!isKeyFrame && this.maxReencodeCount > 0 && this.reEncodeContext.targetSize > 0) {
             const idealFrameSizeBits = Math.min((this.targetBitrate / this.framerate) * (100 + this.reencodeOvershootPercent) / 100, this.reEncodeContext.targetSize);
            
             //const deviationPercent = 100 * (encodedSizeBytes - this.reEncodeContext.targetSize) / this.reEncodeContext.targetSize;

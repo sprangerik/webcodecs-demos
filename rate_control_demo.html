@@ -165,18 +165,18 @@
                 </div>
                 <div>
                     <label for="alpha">Alpha (EMA):</label>
-                    <input type="range" id="alpha" min="0.01" max="1.0" step="0.01" value="0.32">
-                    <span id="alphaValue">0.32</span>
+                    <input type="range" id="alpha" min="0.01" max="1.0" step="0.01" value="0.65">
+                    <span id="alphaValue">0.65</span>
                 </div>
                 <div>
                     <label for="kpBuffer">Kp Buffer:</label>
-                    <input type="range" id="kpBuffer" min="0.00001" max="0.5" step="0.00001" value="0.10">
-                    <span id="kpBufferValue">0.1000</span>
+                    <input type="range" id="kpBuffer" min="0.00001" max="0.5" step="0.00001" value="0.25">
+                    <span id="kpBufferValue">0.25000</span>
                 </div>
                 <div>
                     <label for="targetFullness">Target Fullness (%):</label>
-                    <input type="range" id="targetFullness" min="0" max="100" step="1" value="30">
-                    <span id="targetFullnessValue">30%</span>
+                    <input type="range" id="targetFullness" min="0" max="100" step="1" value="15">
+                    <span id="targetFullnessValue">15%</span>
                 </div>
                 <div>
 
@@ -190,15 +190,15 @@
                     </div>
                     <div>
                         <label for="reencodeOvershootPercent">Re-encode Over Margin (+%):</label>
-                        <input type="number" id="reencodeOvershootPercent" value="20" min="0" max="100">
+                        <input type="number" id="reencodeOvershootPercent" value="1" min="0" max="100">
                     </div>
                     <div>
                         <label for="reencodeUndershootPercent">Re-encode Under Margin (-%):</label>
-                        <input type="number" id="reencodeUndershootPercent" value="20" min="0" max="100">
+                        <input type="number" id="reencodeUndershootPercent" value="40" min="0" max="100">
                     </div>
                     <div>
                         <label for="maxReencodeCount">Max Re-encodes:</label>
-                        <input type="number" id="maxReencodeCount" value="2" min="0" max="10">
+                        <input type="number" id="maxReencodeCount" value="5" min="0" max="10">
                     </div>
                 </div>
             </div>
@@ -279,14 +279,15 @@
         let currentFrame = null;
         let inputFrameIndex = 0;
         let encodeCount = 0;
+        let encoderInstanceId = 0;
 
         // Graph variables
         let graphData = [];
-        const maxGraphPoints = 120; // Show last 24 seconds
-        let lastBitrateCalcTime = performance.now();
-        let bytesSentInInterval = 0;
+        const maxGraphPoints = 240; // Show last 12 seconds at 50ms interval
+        let frameSizeData = []; // Array to store {size: bytes, timestamp: ms}
+        const graphWindowMs = 300; // 0.3 second rolling window
         let graphIntervalId = null;
-        const graphUpdateInterval = 200; // ms
+        const graphUpdateInterval = 50; // ms
 
         async function populateCodecList(bitrateMode = "constant") {
             codecSelect.innerHTML = ''; // Clear existing options
@@ -547,6 +548,12 @@
                     reencodeOvershootPercent = parseInt(reencodeOvershootPercentInput.value);
                     reencodeUndershootPercent = parseInt(reencodeUndershootPercentInput.value);
                     maxReencodeCount = parseInt(maxReencodeCountInput.value);
+                } else {
+                    // Explicitly set to -1 to disable
+                    frameDropThreshold = -1;
+                    reencodeOvershootPercent = -1;
+                    reencodeUndershootPercent = -1;
+                    maxReencodeCount = -1;
                 }
 
                 if (!rateController || rateController.codecType !== codecType || rateController.minQp !== minQp || rateController.maxQp !== maxQp) {
@@ -588,17 +595,34 @@
             return encodeOptions;
         }
 
-        function encoderOutput(chunk, meta) {
+        function encoderOutput(chunk, meta, instanceId) {
+            if (instanceId !== encoderInstanceId) {
+                console.log(`encoderOutput: Stale call from instance ${instanceId}, current is ${encoderInstanceId}. Ignoring chunk type ${chunk.type}.`);
+                return; // This output is from a previous encoder instance
+            }
+
+            // console.log(`encoderOutput: Instance ${instanceId}, type: ${chunk.type}`);
+
+            if (rateControlModeSelect.value !== 'external' && rateController) {
+                // Stale call from a previous encoder instance
+                console.warn("encoderOutput called for non-external mode, ignoring.");
+                if (currentFrame) {
+                    // currentFrame.close(); // This is likely closed by the new encoder's pipeline
+                    // currentFrame = null;
+                }
+                return;
+            }
+
             if (meta.decoderConfig && meta.decoderConfig.description) {
                 lastEncodedDescription = meta.decoderConfig.description;
-                if (lastConfiguredCodec.startsWith('hev1')) {
-                    console.log('HEVC description captured:', lastEncodedDescription);
-                }
+                // if (lastConfiguredCodec.startsWith('hev1')) {
+                //     console.log('HEVC description captured:', lastEncodedDescription);
+                // }
             }
 
             const now = performance.now();
             let reEncodeInfo = { reencode: false, qp: -1 };
-            if (rateController) {
+            if (rateControlModeSelect.value === 'external' && rateController) {
                 reEncodeInfo = rateController.OnEncodedFrame(now, chunk.byteLength, currentQpUsed, chunk.type === 'key');
             }
 
@@ -606,27 +630,41 @@
                 encodeCount++;
                 const encodeOptions = getEncodeOptions(inputFrameIndex - 1, false, reEncodeInfo.qp);
                 currentQpUsed = reEncodeInfo.qp;
+                console.log(`[Inst ${instanceId}] Re-encoding frame ${inputFrameIndex - 1}, count: ${encodeCount}`);
                 encoder.encode(currentFrame, encodeOptions);
             } else {
-                bytesSentInInterval += chunk.byteLength;
+                frameSizeData.push({ size: chunk.byteLength, timestamp: now });
+
+                // Initialize graphData with the first frame
+                if (frameIdCounter === 0) {
+                    const targetBitrate = parseInt(bitrateSlider.value) * 1000;
+                    const actualBitrate = chunk.byteLength * 8 * framerate; // Estimate for the first frame
+                    graphData.push({ time: now, target: targetBitrate, actual: actualBitrate });
+                    drawGraph();
+                }
+
                 frameIdCounter++;
                 const isKeyFrame = (chunk.type === 'key');
                 const dependencies = isKeyFrame ? [] : [lastEncodedFrameId];
                 const encodedFrame = new EncodedFrame(chunk, frameIdCounter, dependencies);
                 lastEncodedFrameId = frameIdCounter;
 
+                // console.log(`[Inst ${instanceId}] Output chunk type: ${chunk.type}, size: ${chunk.byteLength}`);
                 if (decoder && decoder.state === 'configured') {
                     if (decoderNeedsKeyFrame) {
                         if (encodedFrame.encodedChunk.type === 'key') {
+                            console.log(`[Inst ${instanceId}] Decoding keyframe ${frameIdCounter}`);
                             decoder.decode(encodedFrame.encodedChunk);
                             decoderNeedsKeyFrame = false;
-                            console.log('Keyframe received and decoded.');
                         } else {
-                            console.log('Skipping non-keyframe while keyframe is needed.');
+                            console.log(`[Inst ${instanceId}] Skipping non-keyframe ${frameIdCounter}, keyframe needed.`);
                         }
                     } else {
+                        // console.log(`[Inst ${instanceId}] Decoding frame ${frameIdCounter}`);
                         decoder.decode(encodedFrame.encodedChunk);
                     }
+                } else {
+                    console.warn(`[Inst ${instanceId}] Decoder not ready, state: ${decoder ? decoder.state : 'null'}`);
                 }
 
                 if (currentFrame) {
@@ -725,15 +763,20 @@
             const encoderConfig = getEncoderConfig();
             lastConfiguredCodec = encoderConfig.codec;
 
-            encoder = new VideoEncoder({ output: encoderOutput, error: encoderError });
+            encoderInstanceId++;
+            const currentInstanceId = encoderInstanceId;
+            console.log(`startEncoding: Creating encoder instance ${currentInstanceId}`);
+            encoder = new VideoEncoder({ 
+                output: (chunk, meta) => encoderOutput(chunk, meta, currentInstanceId), 
+                error: encoderError 
+            });
             await encoder.configure(encoderConfig);
+            console.log(`startEncoding: Encoder instance ${currentInstanceId} configured`);
             buffers = encoderConfig.scalabilityMode === "manual" ? await encoder.getAllFrameBuffers() : [];
-            if (encoderConfig.scalabilityMode === "manual") {
-                console.log('Initial buffers:', buffers);
-            }
 
             decoder = new VideoDecoder({
                 output: (frame) => {
+                    // console.log(`Decoder output: ts ${frame.timestamp}`);
                     decodedCtx.drawImage(frame, 0, 0, 640, 480);
                     frame.close();
                 },
@@ -745,26 +788,49 @@
             const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
             await decoder.configure(decoderConfig);
             decoderNeedsKeyFrame = true;
+            console.log(`startEncoding: Decoder configured, needsKeyFrame: ${decoderNeedsKeyFrame}`);
 
-            bytesSentInInterval = 0;
-            lastBitrateCalcTime = performance.now();
+            frameSizeData = [];
             graphData = [];
             if (graphIntervalId) clearInterval(graphIntervalId);
             graphIntervalId = setInterval(() => {
                 const now = performance.now();
-                const timeDelta = (now - lastBitrateCalcTime) / 1000;
-                if (timeDelta === 0) return;
+                const windowStart = now - graphWindowMs;
 
-                const actualBitrate = (bytesSentInInterval * 8) / timeDelta;
+                // Remove old data points
+                frameSizeData = frameSizeData.filter(d => d.timestamp >= windowStart);
+
+                let totalBytes = 0;
+                let actualBitrate = 0;
+                if (frameSizeData.length > 0) {
+                    frameSizeData.forEach(d => totalBytes += d.size);
+                    const firstTime = frameSizeData[0].timestamp;
+                    const lastTime = frameSizeData[frameSizeData.length - 1].timestamp;
+                    let windowDurationMs = 0;
+
+                    if (frameSizeData.length > 1) {
+                        const avgInterval = (lastTime - firstTime) / (frameSizeData.length - 1);
+                        windowDurationMs = (lastTime - firstTime) + avgInterval;
+                    } else {
+                        // Single frame in window, estimate duration based on target framerate
+                        windowDurationMs = 1000 / framerate;
+                    }
+
+                    if (windowDurationMs > 0) {
+                        actualBitrate = (totalBytes * 8) / (windowDurationMs / 1000);
+                    } else {
+                         actualBitrate = totalBytes * 8 * framerate; // Fallback
+                    }
+                } else {
+                    actualBitrate = 0;
+                }
+
                 const targetBitrate = parseInt(bitrateSlider.value) * 1000;
 
                 graphData.push({ time: now, target: targetBitrate, actual: actualBitrate });
                 if (graphData.length > maxGraphPoints) {
                     graphData.shift();
                 }
-
-                bytesSentInInterval = 0;
-                lastBitrateCalcTime = now;
                 drawGraph();
             }, graphUpdateInterval);
             
@@ -777,7 +843,12 @@
 
         function stopEncoding() {
             if (frameReader) {
-                frameReader.releaseLock();
+                try {
+                    frameReader.cancel(); // Attempt to cancel first
+                } catch (e) { console.warn("Error cancelling reader:", e); }
+                try {
+                    if (frameReader) frameReader.releaseLock();
+                } catch (e) { console.warn("Error releasing reader lock:", e); }
                 frameReader = null;
             }
             if (frameSource) {
@@ -819,17 +890,18 @@
 
         rateControlModeSelect.addEventListener('change', async () => {
             const mode = rateControlModeSelect.value;
+            console.log(`Switching to ${mode} mode`);
 
-            // ALWAYS STOP
             stopButton.disabled = true;
             if (frameReader) {
+                 console.log("Cancelling frame reader");
                 try {
                     await frameReader.cancel();
                     frameReader.releaseLock();
                 } catch (e) { console.warn("Error cancelling/releasing reader:", e); }
                 frameReader = null;
             }
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await new Promise(resolve => setTimeout(resolve, 100)); 
 
             try {
                 if (mode === 'external') {
@@ -844,14 +916,10 @@
                 }
 
                 if (decoder && decoder.state === 'configured') {
+                    console.log("Resetting decoder");
                     decoder.reset();
                 }
-                // RECONFIGURE DECODER
-                if (decoder && decoder.state !== 'closed') {
-                    const encoderConfig = getEncoderConfig(); // Get the NEW config
-                    const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
-                    await decoder.configure(decoderConfig);
-                }
+                
                 needsKeyFrame = true;
                 decoderNeedsKeyFrame = true;
                 inputFrameIndex = 0;
@@ -859,21 +927,41 @@
                 lastEncodedFrameId = -1;
                 encodeCount = 0;
                 currentFrame = null;
-                if (rateController) rateController._resetReencodeContext();
+                if (rateController) {
+                    console.log("Resetting reencode context in rateController");
+                    rateController._resetReencodeContext();
+                }
+                 if (mode === 'internal') {
+                    rateController = null;
+                 }
 
-                // CLOSE EXISTING ENCODER
                 if (encoder && encoder.state !== 'closed') {
-                    encoder.close();
+                    console.log("Closing old encoder");
+                    try {
+                        encoder.close();
+                    } catch (e) { console.warn("Error closing old encoder:", e); }
                     encoder = null;
                 }
 
-                // Re-create and configure encoder
                 const encoderConfig = getEncoderConfig();
+                encoderInstanceId++;
+                const currentInstanceId = encoderInstanceId;
+                console.log(`Creating new encoder instance ${currentInstanceId}`);
                 encoder = new VideoEncoder({
-                    output: encoderOutput, 
+                    output: (chunk, meta) => encoderOutput(chunk, meta, currentInstanceId), 
                     error: encoderError
                 });
                 await encoder.configure(encoderConfig);
+                console.log(`Encoder instance ${currentInstanceId} configured`);
+
+                if (decoder && decoder.state !== 'closed') {
+                    const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
+                    console.log("Reconfiguring decoder");
+                    await decoder.configure(decoderConfig);
+                    console.log("Decoder reconfigured");
+                } else if (!decoder) {
+                     console.error("Decoder is null, cannot reconfigure");
+                }
 
                 lastConfiguredCodec = encoderConfig.codec; 
 
@@ -882,8 +970,8 @@
                 } else {
                     buffers = [];
                 }
+                console.log(`Mode change complete. needsKeyFrame: ${needsKeyFrame}, decoderNeedsKeyFrame: ${decoderNeedsKeyFrame}`);
 
-                // ALWAYS RESTART
                 if (mediaStream) {
                     const track = mediaStream.getVideoTracks()[0];
                     const processor = new MediaStreamTrackProcessor({ track: track });
@@ -903,7 +991,7 @@
 
         bitrateSlider.addEventListener('input', () => {
             bitrateValue.textContent = bitrateSlider.value + ' kbps';
-            if (rateController) {
+            if (rateControlModeSelect.value === 'external' && rateController) {
                 const alpha = parseFloat(alphaSlider.value);
                 const kpBuffer = parseFloat(kpBufferSlider.value);
                 let frameDropThreshold = -1, reencodeOvershootPercent = -1, reencodeUndershootPercent = -1, maxReencodeCount = -1;
@@ -912,10 +1000,14 @@
                     reencodeOvershootPercent = parseInt(reencodeOvershootPercentInput.value);
                     reencodeUndershootPercent = parseInt(reencodeUndershootPercentInput.value);
                     maxReencodeCount = parseInt(maxReencodeCountInput.value);
+                } else {
+                    frameDropThreshold = -1;
+                    reencodeOvershootPercent = -1;
+                    reencodeUndershootPercent = -1;
+                    maxReencodeCount = -1;
                 }
                 rateController.SetRates(parseInt(bitrateSlider.value) * 1000, framerate, maxBufferLevelMs, targetFullnessPercent, performance.now(), alpha, kpBuffer, frameDropThreshold, reencodeOvershootPercent, reencodeUndershootPercent, maxReencodeCount);
-            }
-            if (rateControlModeSelect.value === 'internal') {
+            } else if (rateControlModeSelect.value === 'internal') {
                  reconfigureRtc();
             }
         });
