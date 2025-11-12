@@ -1,7 +1,12 @@
-
+/**
+ * Stores and manages metadata associated with VideoFrame timestamps.
+ * This class is used to pass information from the point where encode options
+ * are determined to the VideoEncoder's output callback, as the EncodedVideoChunk
+ * only contains the timestamp.
+ */
 class FrameMetadataStore {
     constructor() {
-        this.metadataMap = new Map();
+        this.metadataMap = new Map(); // Maps timestamp to metadata object
     }
 
     /**

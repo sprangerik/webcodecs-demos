@@ -171,12 +171,18 @@
 
     <script src="simple_rate_controller.js"></script>
     <script src="ltr_reference_controller.js"></script>
-\
+
     <script src="simulated_frame_transport.js"></script>
     <script src="frame_assembler.js"></script>
     <script src="encoded_frame.js"></script>
     <script src="frame_metadata_store.js"></script>
     <script>
+        /**
+         * @fileoverview LTR Demo main script.
+         * This script sets up two WebCodecs pipelines: one standard and one LTR-enabled.
+         * It simulates network conditions and visualizes the output of both pipelines.
+         */
+
         const rawVideo = document.getElementById('rawVideo');
         const decodedCanvas = document.getElementById('decodedCanvas');
         const decodedCtx = decodedCanvas.getContext('2d');
@@ -200,35 +206,30 @@
         let currentLossPercent = parseInt(lossPercentSlider.value);
 
         let mediaStream = null;
-        let encoder = null; // Standard
-        let decoder = null; // Standard
-        let transport = null; // Standard
-        let frameAssembler = null; // Standard
-        let rateController = null; // Standard
-        let frameMetadataStore = null; // Standard
-        let currentQpUsed = -1; // Standard
+        let encoder = null; // Standard pipeline encoder
+        let decoder = null; // Standard pipeline decoder
+        let transport = null; // Standard pipeline simulated transport
+        let frameAssembler = null; // Standard pipeline frame assembler
+        let rateController = null; // Standard pipeline rate controller
+        let frameMetadataStore = null; // Standard pipeline metadata store
+        let currentQpUsed = -1; // QP used for the last standard frame
 
-        let encoderLtr = null;
-        let decoderLtr = null;
-        let transportLtr = null;
-        let frameAssemblerLtr = null;
-        let rateControllerLtr = null;
-        let frameMetadataStoreLtr = null;
-        let currentQpUsedLtr = -1;
-        let ltrController = null; // Only for LTR
+        let encoderLtr = null; // LTR pipeline encoder
+        let decoderLtr = null; // LTR pipeline decoder
+        let transportLtr = null; // LTR pipeline simulated transport
+        let frameAssemblerLtr = null; // LTR pipeline frame assembler
+        let rateControllerLtr = null; // LTR pipeline rate controller
+        let frameMetadataStoreLtr = null; // LTR pipeline metadata store
+        let currentQpUsedLtr = -1; // QP used for the last LTR frame
+        let ltrController = null; // LTR reference frame controller
 
         let frameSource = null;
+        let frameReader = null; // Store the reader instance
         const framerate = 30;
         let lastConfiguredCodec = '';
         let needsKeyFrame = false;
-        let lastEncodedDescription = null;
-        let lastEncodedDescriptionLtr = null;
         let frameIdCounter = 0;
-        let lastEncodedFrameId = -1;
         let frameIdCounterLtr = 0;
-        let lastEncodedFrameIdLtr = -1;
-        let decoderConfiguredWithDescription = false;
-        let decoderConfiguredWithDescriptionLtr = false;
 
         // Hardcoded Rate Control Parameters
         const RC_MIN_QP = 10;
@@ -238,6 +239,9 @@
         const RC_TARGET_FULLNESS = 30;
         const RC_MAX_BUFFER_LEVEL_MS = 600;
 
+        /**
+         * Updates the bitrate for both rate controllers based on the slider value.
+         */
         function updateRateController() {
             const newBitrate = parseInt(encoderBitrateSlider.value) * 1000;
             if (rateController) {
@@ -248,7 +252,10 @@
             }
         }
 
-
+        /**
+         * Populates the codec dropdown list with supported codecs found on the system.
+         * Checks for both hardware and software encoder support for manual scalability mode.
+         */
         async function populateCodecList() {
             codecSelect.innerHTML = ''; // Clear existing options
             const warningMessage = document.getElementById('warningMessage');
@@ -307,10 +314,15 @@
             } else {
                 codecSelect.disabled = false;
                 const av1Sw = codecSelect.querySelector  ('option[value="av1-sw"]');
-                if (av1Sw) av1Sw.selected = true;
+                if (av1Sw) av1Sw.selected = true; // Default to AV1 SW if available
             }
         }
 
+        /**
+         * Generates the VideoEncoder configuration object.
+         * @param {boolean} isLtr - True if configuring for the LTR pipeline.
+         * @returns {VideoEncoderConfig} The encoder configuration.
+         */
         function getEncoderConfig(isLtr) {
             const selectedCodecOption = codecSelect.value;
             const [type, accel] = selectedCodecOption.split('-');
@@ -342,44 +354,54 @@
                     encoderConfig.codec = 'hev1.1.6.L93.B0';
                     encoderConfig.hevc = { format: 'annexb' };
                     break;
-                case 'vp8':
-                    encoderConfig.codec = 'vp8';
-                    break;
-                case 'vp9':
-                    encoderConfig.codec = 'vp09.00.10.08';
-                    break;
-                case 'av1':
-                    encoderConfig.codec = 'av01.0.04M.08';
-                    break;
+                case 'vp8': encoderConfig.codec = 'vp8'; break;
+                case 'vp9': encoderConfig.codec = 'vp09.00.10.08'; break;
+                case 'av1': encoderConfig.codec = 'av01.0.04M.08'; break;
             }
             return encoderConfig;
         }
 
+        /**
+         * Generates the VideoDecoder configuration object.
+         * @param {VideoEncoderConfig} encoderConfig - The corresponding encoder configuration.
+         * @param {ArrayBuffer} [description=null] - Optional decoder description from encoder metadata.
+         * @returns {VideoDecoderConfig} The decoder configuration.
+         */
         function getDecoderConfig(encoderConfig, description = null) {
             const decoderConfig = {
                 codec: encoderConfig.codec,
                 codedWidth: encoderConfig.width,
                 codedHeight: encoderConfig.height,
-                hardwareAcceleration: 'prefer-software' // Force software decoding
+                hardwareAcceleration: 'prefer-software' // Force software decoding for stability
             };
-            if (encoderConfig.avc) {
-                decoderConfig.avc = { ...encoderConfig.avc };
-            }
-            if (encoderConfig.hevc) {
-                decoderConfig.hevc = { ...encoderConfig.hevc };
-            }
-            if (description) {
-                decoderConfig.description = description;
-            }
+            if (encoderConfig.avc) decoderConfig.avc = { ...encoderConfig.avc };
+            if (encoderConfig.hevc) decoderConfig.hevc = { ...encoderConfig.hevc };
+            if (description) decoderConfig.description = description;
             return decoderConfig;
         }
-        function getQpRange(codecType) {
-            if (codecType === 'avc' || codecType === 'hevc') {
-                return { min: 0, max: 51 };
+
+        /**
+         * Sets the quantizer parameter in the encode options based on the codec type.
+         * @param {object} encodeOptions - The base encode options object.
+         * @param {number} qp - The quantization parameter.
+         * @param {string} codecType - The codec type (e.g., 'av1', 'vp9').
+         */
+        function setQpEncodeOptions(encodeOptions, qp, codecType) {
+            switch (codecType) {
+                case 'av1': encodeOptions.av1 = { quantizer: qp }; break;
+                case 'vp9': encodeOptions.vp9 = { quantizer: qp }; break;
+                case 'vp8': encodeOptions.vp8 = { quantizer: qp }; break;
+                case 'avc': encodeOptions.avc = { quantizer: qp }; break;
+                case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
             }
-            return { min: 0, max: 63 }; // VPx, AV1
         }
 
+        /**
+         * Creates and configures a full encoding/decoding pipeline.
+         * @param {boolean} isLtr - Whether this is the LTR-enabled pipeline.
+         * @param {CanvasRenderingContext2D} drawCtx - The canvas context to render decoded frames to.
+         * @returns {Promise<object>} The pipeline components.
+         */
         async function createPipeline(isLtr, drawCtx) {
             const pipeline = {
                 encoder: null,
@@ -395,91 +417,88 @@
                 lastEncodedFrameId: -1,
                 isLtr: isLtr,
                 name: isLtr ? "LTR" : "Standard",
+                lastDisplayedTimestamp: -1
             };
 
+            // Initialize SimulatedFrameTransport
             pipeline.transport = new SimulatedFrameTransport(async (encodedFrame, meta) => {
-                // console.log(`[${pipeline.name}] Transport received, ts: ${encodedFrame.timestamp}`);
                 if (pipeline.frameAssembler) pipeline.frameAssembler.OnFrameReceived(encodedFrame);
                 else console.warn(`[${pipeline.name}] FrameAssembler not ready on transport receipt`);
             }, currentRttDelay, currentLossPercent);
             pipeline.transport.SetRate(currentTransportBitrate);
 
+            // Initialize FrameAssembler
             pipeline.frameAssembler = new FrameAssembler((encodedFrame) => {
-                // console.log(`[${pipeline.name}] Assembler to decode, ts: ${encodedFrame.timestamp}`);
                 if (pipeline.decoder && pipeline.decoder.state === 'configured') {
-                    try { pipeline.decoder.decode(encodedFrame.encodedChunk); }
+                    try { pipeline.decoder.decode(encodedFrame.encodedChunk); } 
                     catch (e) { console.error(`[${pipeline.name}] decoder.decode error:`, e); }
                 } else { console.warn(`[${pipeline.name}] Decoder not configured, skipping decode.`); }
             });
             pipeline.frameAssembler.decoderNeedsKeyFrame = true;
 
             const encoderConfig = getEncoderConfig(isLtr);
-            if (isLtr) lastConfiguredCodec = encoderConfig.codec; // Assume same codec for both
+            if (isLtr) lastConfiguredCodec = encoderConfig.codec;
 
+            // Initialize SimpleRateController
             pipeline.rateController = new SimpleRateController(
                 encoderConfig.codec.split('.')[0], // codecType
                 RC_MIN_QP, RC_MAX_QP,
                 parseInt(encoderBitrateSlider.value) * 1000, framerate, performance.now(),
                 RC_MAX_BUFFER_LEVEL_MS, RC_TARGET_FULLNESS, RC_ALPHA, RC_KP_BUFFER,
-                -1, -1, -1 // Disable drop/re-encode
+                -1, -1, -1 // Disable drop/re-encode for this demo
             );
 
+            // Initialize VideoEncoder
             pipeline.encoder = new VideoEncoder({
                 output: async (chunk, meta) => {
                     const frameMetadata = pipeline.frameMetadataStore.getFrameMetadata(chunk.timestamp);
                     pipeline.frameMetadataStore.pruneOldMetadata(chunk.timestamp);
-                    let isLtr = false;
+                    let isLtrFrame = false;
 
+                    // Initialize VideoDecoder if not already done
                     if (!pipeline.decoder) {
                         console.log(`[${pipeline.name}] Initializing decoder.`);
                         pipeline.lastEncodedDescription = meta.decoderConfig?.description || null;
-                        const currentEncoderConfig = getEncoderConfig(isLtr);
+                        const currentEncoderConfig = getEncoderConfig(pipeline.isLtr);
                         const decoderConfig = getDecoderConfig(currentEncoderConfig, pipeline.lastEncodedDescription);
-                        let lastDisplayedTimestamp = -1;
 
                         pipeline.decoder = new VideoDecoder({
                             output: (frame) => {
                                 const ts = frame.timestamp;
                                 try {
-                                    if (ts > lastDisplayedTimestamp) {
-                                        // console.log(`[${pipeline.name}] Decoder output, ts: ${ts}`);
+                                    if (ts > pipeline.lastDisplayedTimestamp) {
                                         drawCtx.drawImage(frame, 0, 0, drawCtx.canvas.width, drawCtx.canvas.height);
-                                        lastDisplayedTimestamp = ts;
-                                    } else {
-                                        // console.log(`[${pipeline.name}] Skipping old frame, ts: ${ts}, lastDisplayedTimestamp: ${lastDisplayedTimestamp}`);
+                                        pipeline.lastDisplayedTimestamp = ts;
                                     }
                                 } catch (e) { console.error(`[${pipeline.name}] Decoder drawImage error:`, e); }
-                                finally {
-                                    // console.log(`[${pipeline.name}] Closing frame, ts: ${ts}`);
-                                    frame.close();
-                                }
+                                finally { frame.close(); }
                             },
-                            error: (e) => { 
+                            error: (e) => {
                                 console.error(`[${pipeline.name}] Decoder Error:`, e);
                                 needsKeyFrame = true;
                                 if (pipeline.frameAssembler) pipeline.frameAssembler.decoderNeedsKeyFrame = true;
-                                console.warn(`[${pipeline.name}] Decoder error, requesting keyframe.`);
                             }
                         });
-                        
-                                                try {
-                                                    await pipeline.decoder.configure(decoderConfig);
-                                                    pipeline.decoderConfiguredWithDescription = pipeline.lastEncodedDescription != null;
-                                                    // console.log(`[${pipeline.name}] Decoder configured.`);
-                                                } catch (e) {
-                                                    console.error(`[${pipeline.name}] Error configuring decoder:`, e);
-                                                    pipeline.decoder = null; return;
-                                                }
-                                            } else if (!pipeline.decoderConfiguredWithDescription && meta.decoderConfig && meta.decoderConfig.description) {                         pipeline.lastEncodedDescription = meta.decoderConfig.description;
-                         const currentEncoderConfig = getEncoderConfig(isLtr);
-                         const decoderConfig = getDecoderConfig(currentEncoderConfig, pipeline.lastEncodedDescription);
-                         if (pipeline.decoder && pipeline.decoder.state !== 'closed') {
-                             try {
-                                 await pipeline.decoder.configure(decoderConfig);
-                                 pipeline.decoderConfiguredWithDescription = true;
-                                 if (pipeline.frameAssembler) pipeline.frameAssembler.decoderNeedsKeyFrame = true;
-                             } catch (e) { console.error(`[${pipeline.name}] Error reconfiguring decoder:`, e); }
-                         }
+
+                        try {
+                            await pipeline.decoder.configure(decoderConfig);
+                            pipeline.decoderConfiguredWithDescription = pipeline.lastEncodedDescription != null;
+                        } catch (e) { 
+                            console.error(`[${pipeline.name}] Error configuring decoder:`, e);
+                            pipeline.decoder = null; return;
+                        }
+                    } else if (!pipeline.decoderConfiguredWithDescription && meta.decoderConfig && meta.decoderConfig.description) {
+                        // Reconfigure decoder if description appears later
+                        pipeline.lastEncodedDescription = meta.decoderConfig.description;
+                        const currentEncoderConfig = getEncoderConfig(pipeline.isLtr);
+                        const decoderConfig = getDecoderConfig(currentEncoderConfig, pipeline.lastEncodedDescription);
+                        if (pipeline.decoder && pipeline.decoder.state !== 'closed') {
+                            try {
+                                await pipeline.decoder.configure(decoderConfig);
+                                pipeline.decoderConfiguredWithDescription = true;
+                                if (pipeline.frameAssembler) pipeline.frameAssembler.decoderNeedsKeyFrame = true;
+                            } catch (e) { console.error(`[${pipeline.name}] Error reconfiguring decoder:`, e); }
+                        }
                     }
                     if (!pipeline.decoderConfiguredWithDescription && chunk.type === 'key') {
                          pipeline.decoderConfiguredWithDescription = true;
@@ -495,46 +514,42 @@
                             dependencies = [pipeline.lastEncodedFrameId];
                         }
                     }
-                    
+
                     let frameId = -1;
                     if (frameMetadata) {
-                        isLtr = frameMetadata.isLtr || false;
+                        isLtrFrame = frameMetadata.isLtr || false;
                         frameId = frameMetadata.frameId || pipeline.frameIdCounter;
                     } else {
                         console.warn(`[${pipeline.name}] No frame metadata found for ts: ${chunk.timestamp}`);
                         frameId = pipeline.frameIdCounter;
                     }
 
-                    const encodedFrame = new EncodedFrame(chunk, frameId, dependencies, chunk.timestamp, isLtr);
-                    // console.log(`[${pipeline.name}] Created EncodedFrame ${frameId} (ts: ${chunk.timestamp}), type: ${chunk.type}, isLtr: ${isLtr}, dependencies: [${dependencies}]`);
+                    const encodedFrame = new EncodedFrame(chunk, frameId, dependencies, chunk.timestamp, isLtrFrame);
                     pipeline.lastEncodedFrameId = frameId;
 
                     pipeline.rateController.OnEncodedFrame(performance.now(), chunk.byteLength, pipeline.currentQpUsed, isKeyFrame);
 
                     if (pipeline.transport) {
-                        // console.log(`[${pipeline.name}] Encoder output, ts: ${chunk.timestamp}, type: ${chunk.type}, size: ${chunk.byteLength}`);
-                        // if (isLtr) console.log(`[${pipeline.name}] Sending LTR frame ${encodedFrame.frameId} (ts: ${chunk.timestamp})`);
                         pipeline.transport.SendFrame(encodedFrame, meta);
-                    } else {
-                        console.warn(`[${pipeline.name}] Transport not ready!`);
                     }
                 },
                 error: (e) => { console.error(`[${pipeline.name}] Encoder Error:`, e); }
             });
             await pipeline.encoder.configure(encoderConfig);
-            // console.log(`[${pipeline.name}] Encoder configured.`);
             return pipeline;
         }
 
+        /**
+         * Starts the video encoding process for both pipelines.
+         */
         async function startEncoding() {
             if (!mediaStream) return;
 
             const track = mediaStream.getVideoTracks()[0];
             const processor = new MediaStreamTrackProcessor({ track: track });
-            
             frameSource = processor.readable;
 
-            // Standard Pipeline
+            // Create Standard Pipeline
             const standardPipeline = await createPipeline(false, standardCtx);
             encoder = standardPipeline.encoder;
             decoder = standardPipeline.decoder;
@@ -543,7 +558,7 @@
             rateController = standardPipeline.rateController;
             frameMetadataStore = standardPipeline.frameMetadataStore;
 
-            // LTR Pipeline
+            // Create LTR Pipeline
             const ltrPipeline = await createPipeline(true, decodedCtx);
             encoderLtr = ltrPipeline.encoder;
             decoderLtr = ltrPipeline.decoder;
@@ -554,24 +569,25 @@
 
             const buffers = await encoderLtr.getAllFrameBuffers();
             ltrController = new LtrReferenceController(buffers, rateControllerLtr);
-            transportLtr.ltrController = ltrController; // Pass controller to transport
+            transportLtr.ltrController = ltrController; // Give transport access to LTR controller for feedback
             console.log('Number of available frame buffers for LTR:', buffers.length);
 
-            const reader = frameSource.getReader();
+            frameReader = frameSource.getReader(); // Store the reader
             needsKeyFrame = true; // Request key frame at the start
 
+            /**
+             * Reads frames from the camera, encodes them with both pipelines, and schedules the next frame.
+             */
             function processFrame() {
                 if (stopButton.disabled) return;
-                let frame = null; // Declare frame here
-                reader.read().then(({ done, value }) => {
+                frameReader.read().then(({ done, value }) => { // Use the stored reader
                     if (done || stopButton.disabled) {
                         if(value) value.close();
                         return;
                     }
-                    const frame = value; // Assign value to frame
-
-                    const keyFrame = needsKeyFrame;
+                    const frame = value;
                     const timestamp = frame.timestamp;
+                    const keyFrame = needsKeyFrame;
 
                     // Standard Encoding
                     if (encoder && encoder.state === 'configured' && rateController) {
@@ -580,18 +596,9 @@
                         currentQpUsed = qp;
                         const encodeOptions = { keyFrame: keyFrame };
                         const codecType = codecSelect.value.split('-')[0];
-                         switch (codecType) {
-                            case 'av1': encodeOptions.av1 = { quantizer: qp }; break;
-                            case 'vp9': encodeOptions.vp9 = { quantizer: qp }; break;
-                            case 'vp8': encodeOptions.vp8 = { quantizer: qp }; break;
-                            case 'avc': encodeOptions.avc = { quantizer: qp }; break;
-                            case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
-                        }
+                        setQpEncodeOptions(encodeOptions, qp, codecType);
                         frameMetadataStore.addFrameMetadata(timestamp, { qp: currentQpUsed, encodeOptions: { ...encodeOptions }, frameId: frameIdCounter });
-                        // console.log(`[Standard] Before encode, ts: ${timestamp}, queue size: ${encoder.encodeQueueSize}`);
                         encoder.encode(frame, encodeOptions);
-                    } else {
-                        // console.log(`[Standard] Frame not encoded, ts: ${timestamp}`);
                     }
 
                     // LTR Encoding
@@ -602,19 +609,10 @@
                         const isLtr = ltrResult.isLtr;
                         const qpLtr = rateControllerLtr.GetNextQp(performance.now(), keyFrame);
                         currentQpUsedLtr = qpLtr;
-                         const codecType = codecSelect.value.split('-')[0];
-                         switch (codecType) {
-                            case 'av1': encodeOptionsLtr.av1 = { quantizer: qpLtr }; break;
-                            case 'vp9': encodeOptionsLtr.vp9 = { quantizer: qpLtr }; break;
-                            case 'vp8': encodeOptionsLtr.vp8 = { quantizer: qpLtr }; break;
-                            case 'avc': encodeOptionsLtr.avc = { quantizer: qpLtr }; break;
-                            case 'hevc': encodeOptionsLtr.hevc = { quantizer: qpLtr }; break;
-                        }
+                        const codecType = codecSelect.value.split('-')[0];
+                        setQpEncodeOptions(encodeOptionsLtr, qpLtr, codecType);
                         frameMetadataStoreLtr.addFrameMetadata(timestamp, { qp: currentQpUsedLtr, encodeOptions: { ...encodeOptionsLtr }, frameId: frameIdCounterLtr, isLtr: isLtr });
-                        // console.log(`[LTR] Before encode, ts: ${timestamp}, queue size: ${encoderLtr.encodeQueueSize}`);
-                        encoderLtr.encode(frame, encodeOptionsLtr); 
-                    } else {
-                        // console.log(`[LTR] Frame not encoded, ts: ${timestamp}`);
+                        encoderLtr.encode(frame, encodeOptionsLtr);
                     }
 
                     frame.close(); // Close frame after both encode calls
@@ -625,18 +623,25 @@
                         requestAnimationFrame(processFrame);
                     }
                 }).catch(e => {
-                    console.error("Error in processFrame reader.read() or clone():", e);
-                    if (frame) { // Check if frame was assigned
-                         console.log(`Closing frame in processFrame catch, ts: ${frame.timestamp}`);
-                         frame.close();
-                    }
+                    console.error("Error in processFrame reader.read():", e);
                     if (!stopButton.disabled) requestAnimationFrame(processFrame);
                 });
             }
             requestAnimationFrame(processFrame);
         }
 
+        /**
+         * Stops the encoding process and cleans up resources.
+         */
         async function stopEncoding() {
+            if (frameReader) {
+                try {
+                    await frameReader.cancel();
+                } catch (e) {
+                    console.warn("Error cancelling frameReader:", e);
+                }
+                frameReader = null;
+            }
             if (frameSource) {
                 frameSource = null;
             }
@@ -668,7 +673,9 @@
             needsKeyFrame = false;
         }
 
-
+        /**
+         * Reconfigures the encoders if the codec selection changes.
+         */
         async function reconfigureEncoder() {
             const reconfig = async (enc, isLtr, dec, assembler) => {
                 if (!enc || enc.state !== 'configured') return false;
@@ -678,7 +685,7 @@
                 if (encoderConfig.codec !== lastConfiguredCodec) {
                     if (dec && dec.state !== 'closed') {
                         const decoderConfig = getDecoderConfig(encoderConfig, null);
-                        await dec.configure(decoderConfig);
+                        try { await dec.configure(decoderConfig); } catch (e) { console.error(`Error reconfiguring decoder:`, e); }
                     }
                     if (assembler) {
                         assembler.decoderNeedsKeyFrame = true;
@@ -689,28 +696,22 @@
                 return false;
             };
 
-            const standardPipeline = { encoder, decoder, frameAssembler };
-            const ltrPipeline = { encoder: encoderLtr, decoder: decoderLtr, frameAssembler: frameAssemblerLtr };
+            const standardChanged = await reconfig(encoder, false, decoder, frameAssembler);
+            const ltrChanged = await reconfig(encoderLtr, true, decoderLtr, frameAssemblerLtr);
 
-            const changed = await reconfig(standardPipeline.encoder, false, standardPipeline.decoder, standardPipeline.frameAssembler);
-            const changedLtr = await reconfig(ltrPipeline.encoder, true, ltrPipeline.decoder, ltrPipeline.frameAssembler);
-
-            if (changed || changedLtr) {
+            if (standardChanged || ltrChanged) {
                 console.log('Codec changed, reconfiguring decoders and requesting key frame');
                 lastConfiguredCodec = getEncoderConfig(false).codec;
                 needsKeyFrame = true;
             }
         }
 
+        // Event Listeners
         transportBitrateSlider.addEventListener('input', () => {
             transportBitrateValue.textContent = transportBitrateSlider.value + ' kbps';
             currentTransportBitrate = parseInt(transportBitrateSlider.value) * 1000;
-            if (transport) {
-                transport.SetRate(currentTransportBitrate);
-            }
-            if (transportLtr) {
-                transportLtr.SetRate(currentTransportBitrate);
-            }
+            if (transport) transport.SetRate(currentTransportBitrate);
+            if (transportLtr) transportLtr.SetRate(currentTransportBitrate);
         });
 
         encoderBitrateSlider.addEventListener('input', () => {
@@ -721,33 +722,23 @@
         rttDelaySlider.addEventListener('input', () => {
             rttDelayValue.textContent = rttDelaySlider.value + ' ms';
             currentRttDelay = parseInt(rttDelaySlider.value);
-            if (transport) {
-                transport.SetRttDelay(currentRttDelay);
-            }
-            if (transportLtr) {
-                transportLtr.SetRttDelay(currentRttDelay);
-            }
+            if (transport) transport.SetRttDelay(currentRttDelay);
+            if (transportLtr) transportLtr.SetRttDelay(currentRttDelay);
         });
 
         lossPercentSlider.addEventListener('input', () => {
             lossPercentValue.textContent = lossPercentSlider.value + '%';
             currentLossPercent = parseInt(lossPercentSlider.value);
-            if (transport) {
-                transport.SetLossPercent(currentLossPercent);
-            }
-            if (transportLtr) {
-                transportLtr.SetLossPercent(currentLossPercent);
-            }
+            if (transport) transport.SetLossPercent(currentLossPercent);
+            if (transportLtr) transportLtr.SetLossPercent(currentLossPercent);
         });
 
-        codecSelect.addEventListener('change', () => {
-            reconfigureEncoder();
-        });
+        codecSelect.addEventListener('change', () => reconfigureEncoder());
 
         requestKeyframeButton.addEventListener('click', () => {
-            if (encoder && encoder.state === 'configured') {
+            if ((encoder && encoder.state === 'configured') || (encoderLtr && encoderLtr.state === 'configured')) {
                 needsKeyFrame = true;
-                console.log("Keyframe requested");
+                console.log("Keyframe requested for next frame");
             }
         });
 
@@ -767,7 +758,7 @@
                 });
 
                 stopButton.disabled = false;
-                startEncoding();
+                await startEncoding();
             } catch (err) {
                 console.error("Error accessing camera: ", err);
                 alert("Could not access camera. Please ensure permission is granted.");
@@ -775,9 +766,9 @@
             }
         });
 
-        stopButton.addEventListener('click', () => {
+        stopButton.addEventListener('click', async () => {
             stopButton.disabled = true;
-            stopEncoding();
+            await stopEncoding();
             if (mediaStream) {
                 mediaStream.getTracks().forEach(track => track.stop());
                 mediaStream = null;
