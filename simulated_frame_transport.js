@@ -1,5 +1,5 @@
 class SimulatedFrameTransport {
-    constructor(onFrameReceived, rttDelayMs = 0, lossPercent = 0) {
+    constructor(onFrameReceived, rttDelayMs = 0, lossPercent = 0, ltrController = null) {
         this.onFrameReceived = onFrameReceived;
         this.rttDelayMs = rttDelayMs;
         this.lossPercent = lossPercent;
@@ -8,6 +8,7 @@ class SimulatedFrameTransport {
         this.queue = [];
         this.nextAvailableSendTime = performance.now();
         this.nextAvailableReturnTime = performance.now();
+        this.ltrController = ltrController;
     }
 
     SetRate(bandwidthBps) {
@@ -42,7 +43,7 @@ class SimulatedFrameTransport {
             if (this.isRunning) {
                 const shouldDrop = Math.random() * 100 < this.lossPercent;
                 if (shouldDrop) {
-                    console.log(`SimTransport: Dropping frame ts: ${encodedFrame.timestamp}`);
+                    console.log(`SimTransport: Dropping frame ts: ${encodedFrame.timestamp} (ID: ${encodedFrame.frameId})`);
                     // Simulate NACK and retransmission
                     const nowAfterDrop = performance.now();
                     const earliestReturnTime = Math.max(nowAfterDrop, this.nextAvailableReturnTime);
@@ -52,12 +53,24 @@ class SimulatedFrameTransport {
 
                     setTimeout(() => {
                         if (this.isRunning) {
-                            console.log(`SimTransport: Retransmitting frame ts: ${encodedFrame.timestamp}`);
+                            console.log(`SimTransport: Retransmitting frame ts: ${encodedFrame.timestamp} (ID: ${encodedFrame.frameId})`);
                             this.SendFrame(encodedFrame, meta);
                         }
                     }, retransmitDelay);
                 } else {
                     this.onFrameReceived(encodedFrame, meta);
+
+                    // If it's an LTR frame, simulate ACK
+                    if (encodedFrame.isLtr && this.ltrController) {
+                        const ackDelay = this.rttDelayMs / 2;
+                        console.log(`SimTransport: Scheduling ACK for LTR frame ${encodedFrame.frameId} in ${ackDelay}ms`);
+                        setTimeout(() => {
+                            if (this.isRunning) {
+                                console.log(`SimTransport: Sending ACK for LTR frame ${encodedFrame.frameId} to controller`);
+                                this.ltrController.OnReceivedLtrAck(encodedFrame.frameId);
+                            }
+                        }, ackDelay);
+                    }
                 }
             }
         }, deliveryDelayMs);

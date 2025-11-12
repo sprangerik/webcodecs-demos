@@ -426,6 +426,7 @@
                 output: async (chunk, meta) => {
                     const frameMetadata = pipeline.frameMetadataStore.getFrameMetadata(chunk.timestamp);
                     pipeline.frameMetadataStore.pruneOldMetadata(chunk.timestamp);
+                    let isLtr = false;
 
                     if (!pipeline.decoder) {
                         console.log(`[${pipeline.name}] Initializing decoder.`);
@@ -474,13 +475,24 @@
                     pipeline.frameIdCounter++;
                     const isKeyFrame = (chunk.type === 'key');
                     const dependencies = isKeyFrame ? [] : [pipeline.lastEncodedFrameId];
-                    const encodedFrame = new EncodedFrame(chunk, pipeline.frameIdCounter, dependencies, chunk.timestamp);
-                    pipeline.lastEncodedFrameId = pipeline.frameIdCounter;
+                    
+                    let frameId = -1;
+                    if (frameMetadata) {
+                        isLtr = frameMetadata.isLtr || false;
+                        frameId = frameMetadata.frameId || pipeline.frameIdCounter;
+                    } else {
+                        console.warn(`[${pipeline.name}] No frame metadata found for ts: ${chunk.timestamp}`);
+                        frameId = pipeline.frameIdCounter;
+                    }
+
+                    const encodedFrame = new EncodedFrame(chunk, frameId, dependencies, chunk.timestamp, isLtr);
+                    pipeline.lastEncodedFrameId = frameId;
 
                     pipeline.rateController.OnEncodedFrame(performance.now(), chunk.byteLength, pipeline.currentQpUsed, isKeyFrame);
 
                     if (pipeline.transport) {
                         // console.log(`[${pipeline.name}] Encoder output, ts: ${chunk.timestamp}, type: ${chunk.type}, size: ${chunk.byteLength}`);
+                        if (isLtr) console.log(`[${pipeline.name}] Sending LTR frame ${encodedFrame.frameId} (ts: ${chunk.timestamp})`);
                         pipeline.transport.SendFrame(encodedFrame, meta);
                     } else {
                         console.warn(`[${pipeline.name}] Transport not ready!`);
@@ -521,6 +533,7 @@
 
             const buffers = await encoderLtr.getAllFrameBuffers();
             ltrController = new LtrReferenceController(buffers, rateControllerLtr);
+            transportLtr.ltrController = ltrController; // Pass controller to transport
             console.log('Number of available frame buffers for LTR:', buffers.length);
 
             const reader = frameSource.getReader();
@@ -541,6 +554,7 @@
 
                     // Standard Encoding
                     if (encoder && encoder.state === 'configured' && rateController) {
+                        frameIdCounter++;
                         const qp = rateController.GetNextQp(performance.now(), keyFrame);
                         currentQpUsed = qp;
                         const encodeOptions = { keyFrame: keyFrame };
@@ -552,7 +566,7 @@
                             case 'avc': encodeOptions.avc = { quantizer: qp }; break;
                             case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
                         }
-                        frameMetadataStore.addFrameMetadata(timestamp, { qp: currentQpUsed, encodeOptions: { ...encodeOptions } });
+                        frameMetadataStore.addFrameMetadata(timestamp, { qp: currentQpUsed, encodeOptions: { ...encodeOptions }, frameId: frameIdCounter });
                         // console.log(`[Standard] Before encode, ts: ${timestamp}, queue size: ${encoder.encodeQueueSize}`);
                         encoder.encode(frame, encodeOptions);
                     } else {
@@ -561,7 +575,10 @@
 
                     // LTR Encoding
                     if (encoderLtr && encoderLtr.state === 'configured' && ltrController && rateControllerLtr) {
-                        const encodeOptionsLtr = ltrController.GetNextEncodeOptions(keyFrame);
+                        frameIdCounterLtr++;
+                        const ltrResult = ltrController.GetNextEncodeOptions(keyFrame, frameIdCounterLtr);
+                        let encodeOptionsLtr = ltrResult.encodeOptions;
+                        const isLtr = ltrResult.isLtr;
                         const qpLtr = rateControllerLtr.GetNextQp(performance.now(), keyFrame);
                         currentQpUsedLtr = qpLtr;
                          const codecType = codecSelect.value.split('-')[0];
@@ -572,7 +589,7 @@
                             case 'avc': encodeOptionsLtr.avc = { quantizer: qpLtr }; break;
                             case 'hevc': encodeOptionsLtr.hevc = { quantizer: qpLtr }; break;
                         }
-                        frameMetadataStoreLtr.addFrameMetadata(timestamp, { qp: currentQpUsedLtr, encodeOptions: { ...encodeOptionsLtr } });
+                        frameMetadataStoreLtr.addFrameMetadata(timestamp, { qp: currentQpUsedLtr, encodeOptions: { ...encodeOptionsLtr }, frameId: frameIdCounterLtr, isLtr: isLtr });
                         // console.log(`[LTR] Before encode, ts: ${timestamp}, queue size: ${encoderLtr.encodeQueueSize}`);
                         encoderLtr.encode(frame, encodeOptionsLtr); 
                     } else {
