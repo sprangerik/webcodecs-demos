@@ -252,10 +252,12 @@ class SimpleRateController {
         if (this.reEncodeContext.upperBound.size > 0 && this.reEncodeContext.upperBound.qp <= this.minQp) {
             return false;
         }
+        /*
         if (this.reEncodeContext.upperBound.size > 0 && this.reEncodeContext.lowerBound.size > 0 &&
             this.reEncodeContext.upperBound.qp <= this.reEncodeContext.lowerBound.qp) {
             return false;
         }
+            */
         return true;
     }
 
@@ -358,21 +360,24 @@ class SimpleRateController {
         let reason = "";
     
         if (!isKeyFrame && this.reEncodeContext.targetSize > 0) {
-            const deviationPercent = 100 * (encodedSizeBytes - this.reEncodeContext.targetSize) / this.reEncodeContext.targetSize;
+            const idealFrameSizeBits = Math.min((this.targetBitrate / this.framerate) * (100 + this.reencodeOvershootPercent) / 100, this.reEncodeContext.targetSize);
+           
+            //const deviationPercent = 100 * (encodedSizeBytes - this.reEncodeContext.targetSize) / this.reEncodeContext.targetSize;
+            const deviationPercent = 100 * (encodedSizeBits - idealFrameSizeBits) / idealFrameSizeBits;
 
             if (this.reencodeOvershootPercent > 0 && deviationPercent > this.reencodeOvershootPercent) {
                 if (qp < this.maxQp) {
                     triggerReencode = true;
                     reason = "overshoot";
                 } else {
-                    // console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
+                    console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
                 }
             } else if (this.reencodeUndershootPercent > 0 && deviationPercent < -this.reencodeUndershootPercent) {
                 if (qp > this.minQp) {
                     triggerReencode = true;
                     reason = "undershoot";
                 } else {
-                    // console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
+                    console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
                 }
             }
         }
@@ -386,29 +391,27 @@ class SimpleRateController {
                 return { reencode: false };
             }
 
-            const actualFrameSizeBits = encodedSizeBytes * 8;
-
-            if (actualFrameSizeBits > targetFrameSizeBits) {
+            if (encodedSizeBits > targetFrameSizeBits) {
                 if (this.reEncodeContext.upperBound.size === -1 || 
-                    actualFrameSizeBits < this.reEncodeContext.upperBound.size) {
+                    encodedSizeBits < this.reEncodeContext.upperBound.size) {
                   // New upper bound.
                   this.reEncodeContext.upperBound = {
-                    size: actualFrameSizeBits,
+                    size: encodedSizeBits,
                     qp: qp
                   };
                 }
-            } else if (actualFrameSizeBits < targetFrameSizeBits) {
+            } else if (encodedSizeBits < targetFrameSizeBits) {
                 if (this.reEncodeContext.lowerBound.size === -1 || 
-                    actualFrameSizeBits > this.reEncodeContext.lowerBound.size) {
+                    encodedSizeBits > this.reEncodeContext.lowerBound.size) {
                   // New lower bound.
                   this.reEncodeContext.lowerBound = {
-                    size: actualFrameSizeBits,
+                    size: encodedSizeBits,
                     qp: qp
                   };
                 }
             }
 
-            const sizeChangeRatio = Math.max(0.001, Math.min(628, targetFrameSizeBits / actualFrameSizeBits));
+            const sizeChangeRatio = Math.max(0.001, Math.min(628, targetFrameSizeBits / encodedSizeBits));
             let nextQp = Math.round(qp + this._qpChangeFromSizeRatioChange(sizeChangeRatio));
 
             if (this.reEncodeContext.lowerBound.size !== -1) {
@@ -419,33 +422,45 @@ class SimpleRateController {
             }
             
             nextQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
-            
-            // console.log(`Re-encode ${this.reEncodeContext.count}/${this.maxReencodeCount} (${reason}): size ${actualFrameSizeBits} bits, target: ${targetFrameSizeBits} bits => updating QP from ${qp} to ${nextQp}.`);
-            return { reencode: true, qp: nextQp };
-        } else {
-            // Frame size is acceptable or max re-encodes reached
-            this.bitDebt += encodedSizeBits;
-            // console.log(`[${performance.now().toFixed(2)}] OnEncodedFrame: encodedSize: ${encodedSizeBytes}, new bitDebt: ${this.bitDebt.toFixed(0)}`);
-            // Clamp bitDebt after adding new frame as well
-            this.bitDebt = Math.min(this.bitDebt, this.maxBufferLevelBits);
-
-            // Update QP-to-size statistics only on successful encode
-            const targetFrameSizeBits = this.targetBitrate / this.framerate;
-            const actualSizeRatio = encodedSizeBits / targetFrameSizeBits;
-            this.avgQp = this.alpha * qp + (1 - this.alpha) * this.avgQp;
-            this.avgSizeRatio = this.alpha * actualSizeRatio + (1 - this.alpha) * this.avgSizeRatio;
-
-            if (this.reEncodeContext.count > 0) {
-                // console.log(`Re-encode loop ended. Size = ${encodedSizeBytes * 8} bits, target = ${this.reEncodeContext.targetSize * 8} bits, using QP ${qp}.`);
+            if (qp !== nextQp) {
+                console.log(`Re-encode ${this.reEncodeContext.count}/${this.maxReencodeCount} (${reason}): size ${encodedSizeBits} bits, target: ${targetFrameSizeBits} bits => updating QP from ${qp} to ${nextQp}.`);
+                return { reencode: true, qp: nextQp };
+            } else if (encodedSizeBits > targetFrameSizeBits) {
+                // Overshoot after converging upper/lower bound.
+                this.reEncodeContext.lowerBound.qp = this.reEncodeContext.upperBound.qp = this.reEncodeContext.upperBound.qp - 1;
+                return { reencode: true, qp: nextQp - 1};
             }
-
-            // Reset re-encode state for the next frame
-            this._resetReencodeContext();
-
-
-            // console.log(`SimpleRateController OnEncodedFrame: ${isKeyFrame ? 'KEY' : 'DELTA'} size: ${encodedSizeBytes} bytes, QP: ${qp}, actualSizeRatio: ${actualSizeRatio.toFixed(2)}, avgQp: ${this.avgQp.toFixed(2)}, avgSizeRatio: ${this.avgSizeRatio.toFixed(2)}, new debt: ${this.bitDebt.toFixed(0)}`);
-            return { reencode: false };
+        } 
+        if (this.maxReencodeCount > 0) {
+            if (!this._canReEncode()) {
+                console.log('Cannot reencode.');
+            } else {
+                console.log('reached target bracket.');
+            }
         }
+        // Frame size is acceptable or max re-encodes reached
+        this.bitDebt += encodedSizeBits;
+        // console.log(`[${performance.now().toFixed(2)}] OnEncodedFrame: encodedSize: ${encodedSizeBytes}, new bitDebt: ${this.bitDebt.toFixed(0)}`);
+        // Clamp bitDebt after adding new frame as well
+        this.bitDebt = Math.min(this.bitDebt, this.maxBufferLevelBits);
+
+        // Update QP-to-size statistics only on successful encode
+        const targetFrameSizeBits = this.targetBitrate / this.framerate;
+        const actualSizeRatio = encodedSizeBits / targetFrameSizeBits;
+        this.avgQp = this.alpha * qp + (1 - this.alpha) * this.avgQp;
+        this.avgSizeRatio = this.alpha * actualSizeRatio + (1 - this.alpha) * this.avgSizeRatio;
+
+        if (this.reEncodeContext.count > 0) {
+            // console.log(`Re-encode loop ended. Size = ${encodedSizeBytes * 8} bits, target = ${this.reEncodeContext.targetSize * 8} bits, using QP ${qp}.`);
+        }
+
+        // Reset re-encode state for the next frame
+        this._resetReencodeContext();
+
+
+        // console.log(`SimpleRateController OnEncodedFrame: ${isKeyFrame ? 'KEY' : 'DELTA'} size: ${encodedSizeBytes} bytes, QP: ${qp}, actualSizeRatio: ${actualSizeRatio.toFixed(2)}, avgQp: ${this.avgQp.toFixed(2)}, avgSizeRatio: ${this.avgSizeRatio.toFixed(2)}, new debt: ${this.bitDebt.toFixed(0)}`);
+        return { reencode: false };
     }
+    
 }
 
