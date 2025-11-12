@@ -136,17 +136,17 @@
                 </div>
                 <div>
                     <label for="transportBitrate">Transport Limit (kbps):</label>
-                    <input type="range" id="transportBitrate" min="100" max="2500" value="500">
-                    <span id="transportBitrateValue">500 kbps</span>
+                    <input type="range" id="transportBitrate" min="100" max="2500" value="1000">
+                    <span id="transportBitrateValue">1000 kbps</span>
                 </div>
                 <div>
                     <label for="rttDelay">RTT Delay (ms):</label>
-                    <input type="number" id="rttDelay" value="100" style="width: 80px;">
+                    <input type="number" id="rttDelay" value="300" style="width: 80px;">
                 </div>
                 <div>
                     <label for="lossPercent">Loss Percent:</label>
-                    <input type="range" id="lossPercent" min="0" max="100" value="0">
-                    <span id="lossPercentValue">0%</span>
+                    <input type="range" id="lossPercent" min="0" max="100" value="5">
+                    <span id="lossPercentValue">5%</span>
                 </div>
                 <div>
                     <button id="requestKeyframeButton">Request Keyframe</button>
@@ -474,7 +474,14 @@
 
                     pipeline.frameIdCounter++;
                     const isKeyFrame = (chunk.type === 'key');
-                    const dependencies = isKeyFrame ? [] : [pipeline.lastEncodedFrameId];
+                    let dependencies = [];
+                    if (!isKeyFrame) {
+                        if (pipeline.isLtr && ltrController) {
+                            dependencies = ltrController.GetLastGoodFrameIds();
+                        } else {
+                            dependencies = [pipeline.lastEncodedFrameId];
+                        }
+                    }
                     
                     let frameId = -1;
                     if (frameMetadata) {
@@ -486,6 +493,7 @@
                     }
 
                     const encodedFrame = new EncodedFrame(chunk, frameId, dependencies, chunk.timestamp, isLtr);
+                    console.log(`[${pipeline.name}] Created EncodedFrame ${frameId} (ts: ${chunk.timestamp}), type: ${chunk.type}, isLtr: ${isLtr}, dependencies: [${dependencies}]`);
                     pipeline.lastEncodedFrameId = frameId;
 
                     pipeline.rateController.OnEncodedFrame(performance.now(), chunk.byteLength, pipeline.currentQpUsed, isKeyFrame);

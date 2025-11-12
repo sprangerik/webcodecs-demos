@@ -4,10 +4,17 @@ class FrameAssembler {
         this.decodedFrames = new Map(); // Stores frameId of decoded frames
         this.bufferedFrames = new Map(); // Stores EncodedFrame objects that are waiting for dependencies
         this.decoderNeedsKeyFrame = false; // New flag
+        this.lastDecodedFrameId = -1;
     }
 
     OnFrameReceived(encodedFrame) {
         // console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
+        
+        if (!encodedFrame.isLtr && encodedFrame.frameId <= this.lastDecodedFrameId) {
+            console.warn(`FrameAssembler: Discarding old non-LTR frame ${encodedFrame.frameId}, last decoded was ${this.lastDecodedFrameId}`);
+            return;
+        }
+
         if (this._canDecode(encodedFrame)) {
             this._decodeAndProcess(encodedFrame);
         } else {
@@ -34,10 +41,13 @@ class FrameAssembler {
             return; // Already processed, prevent duplicate
         }
 
-        // console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
+        console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
         this._clearOldState(encodedFrame.encodedChunk.timestamp);
         this.onReadyToRenderCallback(encodedFrame); // This will trigger decoder.decode()
         this.decodedFrames.set(encodedFrame.frameId, true); // Mark as decoded (true for simplicity)
+        if (encodedFrame.frameId > this.lastDecodedFrameId) {
+            this.lastDecodedFrameId = encodedFrame.frameId;
+        }
         this.bufferedFrames.delete(encodedFrame.frameId); // Remove from buffer if it was there
 
         if (encodedFrame.encodedChunk.type === 'key' && this.decoderNeedsKeyFrame) {
@@ -81,5 +91,6 @@ class FrameAssembler {
         this.decodedFrames.clear();
         this.bufferedFrames.clear();
         this.decoderNeedsKeyFrame = false; // Reset this flag as well
+        this.lastDecodedFrameId = -1;
     }
 }

@@ -72,4 +72,8 @@ class LtrReferenceController {
             console.warn(`LTR: Received ACK for ${frameId}, but expected ${this.pendingLtrFrameId}`);
         }
     }
+
+    GetLastGoodFrameIds() {
+        return this.buffers.filter(b => b.state === 'good').map(b => b.frameId);
+    }
 }
