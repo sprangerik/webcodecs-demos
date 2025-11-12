@@ -7,7 +7,7 @@ class FrameAssembler {
     }
 
     OnFrameReceived(encodedFrame) {
-        console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
+        // console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
         if (this._canDecode(encodedFrame)) {
             this._decodeAndProcess(encodedFrame);
         } else {
@@ -23,7 +23,7 @@ class FrameAssembler {
             return true;
         }
         const depsMet = encodedFrame.dependencies.every(depId => this.decodedFrames.has(depId));
-        console.log(`FrameAssembler: _canDecode - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, depsMet: ${depsMet}`);
+        // console.log(`FrameAssembler: _canDecode - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, depsMet: ${depsMet}`);
         return depsMet;
     }
 

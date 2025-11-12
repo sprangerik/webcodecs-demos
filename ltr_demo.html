@@ -131,13 +131,22 @@
                 </div>
                 <div>
                     <label for="encoderBitrate">Encoder Target Bitrate (kbps):</label>
-                    <input type="range" id="encoderBitrate" min="100" max="2500" value="1000">
-                    <span id="encoderBitrateValue">1000 kbps</span>
+                    <input type="range" id="encoderBitrate" min="100" max="2500" value="450">
+                    <span id="encoderBitrateValue">450 kbps</span>
                 </div>
                 <div>
                     <label for="transportBitrate">Transport Limit (kbps):</label>
-                    <input type="range" id="transportBitrate" min="100" max="2500" value="1000">
-                    <span id="transportBitrateValue">1000 kbps</span>
+                    <input type="range" id="transportBitrate" min="100" max="2500" value="500">
+                    <span id="transportBitrateValue">500 kbps</span>
+                </div>
+                <div>
+                    <label for="rttDelay">RTT Delay (ms):</label>
+                    <input type="number" id="rttDelay" value="100" style="width: 80px;">
+                </div>
+                <div>
+                    <label for="lossPercent">Loss Percent:</label>
+                    <input type="range" id="lossPercent" min="0" max="100" value="0">
+                    <span id="lossPercentValue">0%</span>
                 </div>
                 <div>
                     <button id="requestKeyframeButton">Request Keyframe</button>
@@ -180,7 +189,13 @@
         const encoderBitrateSlider = document.getElementById('encoderBitrate');
         const encoderBitrateValue = document.getElementById('encoderBitrateValue');
         const requestKeyframeButton = document.getElementById('requestKeyframeButton');
+        const rttDelayInput = document.getElementById('rttDelay');
+        const lossPercentSlider = document.getElementById('lossPercent');
+        const lossPercentValue = document.getElementById('lossPercentValue');
 
+        let currentTransportBitrate = parseInt(transportBitrateSlider.value) * 1000;
+        let currentRttDelay = parseInt(rttDelayInput.value);
+        let currentLossPercent = parseInt(lossPercentSlider.value);
 
         let mediaStream = null;
         let encoder = null; // Standard
@@ -380,6 +395,22 @@
                 name: isLtr ? "LTR" : "Standard",
             };
 
+            pipeline.transport = new SimulatedFrameTransport(async (encodedFrame, meta) => {
+                // console.log(`[${pipeline.name}] Transport received, ts: ${encodedFrame.timestamp}`);
+                if (pipeline.frameAssembler) pipeline.frameAssembler.OnFrameReceived(encodedFrame);
+                else console.warn(`[${pipeline.name}] FrameAssembler not ready on transport receipt`);
+            }, currentRttDelay, currentLossPercent);
+            pipeline.transport.SetRate(currentTransportBitrate);
+
+            pipeline.frameAssembler = new FrameAssembler((encodedFrame) => {
+                // console.log(`[${pipeline.name}] Assembler to decode, ts: ${encodedFrame.timestamp}`);
+                if (pipeline.decoder && pipeline.decoder.state === 'configured') {
+                    try { pipeline.decoder.decode(encodedFrame.encodedChunk); }
+                    catch (e) { console.error(`[${pipeline.name}] decoder.decode error:`, e); }
+                } else { console.warn(`[${pipeline.name}] Decoder not configured, skipping decode.`); }
+            });
+            pipeline.frameAssembler.decoderNeedsKeyFrame = true;
+
             const encoderConfig = getEncoderConfig(isLtr);
             if (isLtr) lastConfiguredCodec = encoderConfig.codec; // Assume same codec for both
 
@@ -405,42 +436,27 @@
                         pipeline.decoder = new VideoDecoder({
                             output: (frame) => {
                                 const ts = frame.timestamp;
-                                console.log(`[${pipeline.name}] Decoder output, ts: ${ts}`);
+                                // console.log(`[${pipeline.name}] Decoder output, ts: ${ts}`);
                                 try {
                                     drawCtx.drawImage(frame, 0, 0, drawCtx.canvas.width, drawCtx.canvas.height);
                                 } catch (e) { console.error(`[${pipeline.name}] Decoder drawImage error:`, e); }
                                 finally {
-                                    console.log(`[${pipeline.name}] Closing frame, ts: ${ts}`);
+                                    // console.log(`[${pipeline.name}] Closing frame, ts: ${ts}`);
                                     frame.close();
                                 }
                             },
                             error: (e) => { console.error(`[${pipeline.name}] Decoder Error:`, e); }
                         });
-                        try {
-                            await pipeline.decoder.configure(decoderConfig);
-                            pipeline.decoderConfiguredWithDescription = pipeline.lastEncodedDescription != null;
-                            console.log(`[${pipeline.name}] Decoder configured.`);
-
-                            pipeline.frameAssembler = new FrameAssembler((encodedFrame) => {
-                                console.log(`[${pipeline.name}] Assembler to decode, ts: ${encodedFrame.timestamp}`);
-                                if (pipeline.decoder.state === 'configured') {
-                                    try { pipeline.decoder.decode(encodedFrame.encodedChunk); }
-                                    catch (e) { console.error(`[${pipeline.name}] decoder.decode error:`, e); }
-                                } else { console.warn(`[${pipeline.name}] Decoder not configured, skipping decode.`); }
-                            });
-                            pipeline.frameAssembler.decoderNeedsKeyFrame = true;
-
-                            pipeline.transport = new SimulatedFrameTransport(async (encodedFrame, meta) => {
-                                console.log(`[${pipeline.name}] Transport received, ts: ${encodedFrame.timestamp}`);
-                                if (pipeline.frameAssembler) pipeline.frameAssembler.OnFrameReceived(encodedFrame);
-                            });
-                            pipeline.transport.SetRate(parseInt(transportBitrateSlider.value) * 1000);
-                        } catch (e) {
-                            console.error(`[${pipeline.name}] Error configuring decoder:`, e);
-                            pipeline.decoder = null; return;
-                        }
-                    } else if (!pipeline.decoderConfiguredWithDescription && meta.decoderConfig && meta.decoderConfig.description) {
-                         pipeline.lastEncodedDescription = meta.decoderConfig.description;
+                        
+                                                try {
+                                                    await pipeline.decoder.configure(decoderConfig);
+                                                    pipeline.decoderConfiguredWithDescription = pipeline.lastEncodedDescription != null;
+                                                    // console.log(`[${pipeline.name}] Decoder configured.`);
+                                                } catch (e) {
+                                                    console.error(`[${pipeline.name}] Error configuring decoder:`, e);
+                                                    pipeline.decoder = null; return;
+                                                }
+                                            } else if (!pipeline.decoderConfiguredWithDescription && meta.decoderConfig && meta.decoderConfig.description) {                         pipeline.lastEncodedDescription = meta.decoderConfig.description;
                          const currentEncoderConfig = getEncoderConfig(isLtr);
                          const decoderConfig = getDecoderConfig(currentEncoderConfig, pipeline.lastEncodedDescription);
                          if (pipeline.decoder && pipeline.decoder.state !== 'closed') {
@@ -464,7 +480,7 @@
                     pipeline.rateController.OnEncodedFrame(performance.now(), chunk.byteLength, pipeline.currentQpUsed, isKeyFrame);
 
                     if (pipeline.transport) {
-                        console.log(`[${pipeline.name}] Encoder output, ts: ${chunk.timestamp}, type: ${chunk.type}, size: ${chunk.byteLength}`);
+                        // console.log(`[${pipeline.name}] Encoder output, ts: ${chunk.timestamp}, type: ${chunk.type}, size: ${chunk.byteLength}`);
                         pipeline.transport.SendFrame(encodedFrame, meta);
                     } else {
                         console.warn(`[${pipeline.name}] Transport not ready!`);
@@ -473,7 +489,7 @@
                 error: (e) => { console.error(`[${pipeline.name}] Encoder Error:`, e); }
             });
             await pipeline.encoder.configure(encoderConfig);
-            console.log(`[${pipeline.name}] Encoder configured.`);
+            // console.log(`[${pipeline.name}] Encoder configured.`);
             return pipeline;
         }
 
@@ -496,8 +512,6 @@
 
             // LTR Pipeline
             const ltrPipeline = await createPipeline(true, decodedCtx);
-
-
             encoderLtr = ltrPipeline.encoder;
             decoderLtr = ltrPipeline.decoder;
             transportLtr = ltrPipeline.transport;
@@ -539,10 +553,10 @@
                             case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
                         }
                         frameMetadataStore.addFrameMetadata(timestamp, { qp: currentQpUsed, encodeOptions: { ...encodeOptions } });
-                        console.log(`[Standard] Before encode, ts: ${timestamp}, queue size: ${encoder.encodeQueueSize}`);
+                        // console.log(`[Standard] Before encode, ts: ${timestamp}, queue size: ${encoder.encodeQueueSize}`);
                         encoder.encode(frame, encodeOptions);
                     } else {
-                        console.log(`[Standard] Frame not encoded, ts: ${timestamp}`);
+                        // console.log(`[Standard] Frame not encoded, ts: ${timestamp}`);
                     }
 
                     // LTR Encoding
@@ -559,10 +573,10 @@
                             case 'hevc': encodeOptionsLtr.hevc = { quantizer: qpLtr }; break;
                         }
                         frameMetadataStoreLtr.addFrameMetadata(timestamp, { qp: currentQpUsedLtr, encodeOptions: { ...encodeOptionsLtr } });
-                        console.log(`[LTR] Before encode, ts: ${timestamp}, queue size: ${encoderLtr.encodeQueueSize}`);
+                        // console.log(`[LTR] Before encode, ts: ${timestamp}, queue size: ${encoderLtr.encodeQueueSize}`);
                         encoderLtr.encode(frame, encodeOptionsLtr); 
                     } else {
-                        console.log(`[LTR] Frame not encoded, ts: ${timestamp}`);
+                        // console.log(`[LTR] Frame not encoded, ts: ${timestamp}`);
                     }
 
                     frame.close(); // Close frame after both encode calls
@@ -652,18 +666,39 @@
 
         transportBitrateSlider.addEventListener('input', () => {
             transportBitrateValue.textContent = transportBitrateSlider.value + ' kbps';
-            const newRate = parseInt(transportBitrateSlider.value) * 1000;
+            currentTransportBitrate = parseInt(transportBitrateSlider.value) * 1000;
             if (transport) {
-                transport.SetRate(newRate);
+                transport.SetRate(currentTransportBitrate);
             }
             if (transportLtr) {
-                transportLtr.SetRate(newRate);
+                transportLtr.SetRate(currentTransportBitrate);
             }
         });
 
         encoderBitrateSlider.addEventListener('input', () => {
             encoderBitrateValue.textContent = encoderBitrateSlider.value + ' kbps';
             updateRateController();
+        });
+
+        rttDelayInput.addEventListener('input', () => {
+            currentRttDelay = parseInt(rttDelayInput.value);
+            if (transport) {
+                transport.SetRttDelay(currentRttDelay);
+            }
+            if (transportLtr) {
+                transportLtr.SetRttDelay(currentRttDelay);
+            }
+        });
+
+        lossPercentSlider.addEventListener('input', () => {
+            lossPercentValue.textContent = lossPercentSlider.value + '%';
+            currentLossPercent = parseInt(lossPercentSlider.value);
+            if (transport) {
+                transport.SetLossPercent(currentLossPercent);
+            }
+            if (transportLtr) {
+                transportLtr.SetLossPercent(currentLossPercent);
+            }
         });
 
         codecSelect.addEventListener('change', () => {

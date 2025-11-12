@@ -1,70 +1,57 @@
 class SimulatedFrameTransport {
-    constructor(frameReceiverCallback) {
-        this.frameReceiverCallback = frameReceiverCallback;
-        this.bandwidthBps = 500 * 1000; // Default to 500 kbps
-        this.frameQueue = [];
-        this.isDelivering = false;
-        this.timeoutId = null;
-        this.keyFrameNeeded = false;
-        this.nextAvailableSendTime = 0;
+    constructor(onFrameReceived, rttDelayMs = 0, lossPercent = 0) {
+        this.onFrameReceived = onFrameReceived;
+        this.rttDelayMs = rttDelayMs;
+        this.lossPercent = lossPercent;
+        this.bandwidthBps = 1000000; // Default 1 Mbps
+        this.isRunning = true;
+        this.queue = [];
+        this.nextAvailableSendTime = performance.now();
+        this.nextAvailableReturnTime = performance.now();
     }
 
     SetRate(bandwidthBps) {
         this.bandwidthBps = bandwidthBps;
     }
 
-    SetKeyFrameNeeded() {
-        this.keyFrameNeeded = true;
+    SetRttDelay(rttDelayMs) {
+        this.rttDelayMs = rttDelayMs;
     }
 
-    ClearKeyFrameNeeded() {
-        this.keyFrameNeeded = false;
+    SetLossPercent(lossPercent) {
+        this.lossPercent = lossPercent;
     }
 
     SendFrame(encodedFrame, meta) {
-        this.frameQueue.push({ encodedFrame, meta });
+        if (!this.isRunning) return;
 
-        if (!this.isDelivering) {
-            this.DeliverNextFrame();
-        }
-    }
-
-    DeliverNextFrame() {
-        if (this.frameQueue.length === 0) {
-            this.isDelivering = false;
-            return;
-        }
-
-        this.isDelivering = true;
-        const { encodedFrame, meta } = this.frameQueue.shift();
-
-        const now = performance.now();
         const frameSizeBits = encodedFrame.encodedChunk.byteLength * 8;
         const transmissionTimeMs = (frameSizeBits / this.bandwidthBps) * 1000;
 
-        const startTime = Math.max(now, this.nextAvailableSendTime);
-        const finishTime = startTime + transmissionTimeMs;
-        const delayMs = Math.max(0, finishTime - now);
+        const now = performance.now();
+        const earliestSendTime = Math.max(now, this.nextAvailableSendTime);
+        const finishTime = earliestSendTime + transmissionTimeMs;
 
         this.nextAvailableSendTime = finishTime;
 
-        this.timeoutId = setTimeout(() => {
-            if (this.frameReceiverCallback) {
-                this.frameReceiverCallback(encodedFrame, meta);
+        const deliveryDelayMs = (earliestSendTime - now) + transmissionTimeMs + (this.rttDelayMs / 2);
+
+        // console.log(`SimTransport: SendFrame ts: ${encodedFrame.timestamp}, size: ${encodedFrame.encodedChunk.byteLength}, transTime: ${transmissionTimeMs.toFixed(1)}, rtt/2: ${this.rttDelayMs / 2}, totalDelay: ${deliveryDelayMs.toFixed(1)}`);
+
+        setTimeout(() => {
+            if (this.isRunning) {
+                const shouldDrop = Math.random() * 100 < this.lossPercent;
+                if (shouldDrop) {
+                    console.log(`SimTransport: Dropping frame ts: ${encodedFrame.timestamp}`);
+                    // Retransmission logic removed for now
+                } else {
+                    this.onFrameReceived(encodedFrame, meta);
+                }
             }
-            // Start processing the next frame only after this one is delivered.
-            this.DeliverNextFrame();
-        }, delayMs);
+        }, deliveryDelayMs);
     }
 
     Stop() {
-        if (this.timeoutId) {
-            clearTimeout(this.timeoutId);
-            this.timeoutId = null;
-        }
-        this.frameQueue = [];
-        this.isDelivering = false;
-        this.keyFrameNeeded = false;
-        this.nextAvailableSendTime = 0;
+        this.isRunning = false;
     }
 }
