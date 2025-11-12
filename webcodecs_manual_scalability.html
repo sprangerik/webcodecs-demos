@@ -1,248 +1,645 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<title>Webcam Capture and Encode/Decode with Multiple Streams</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebCodecs Manual Scalability Demo</title>
+<link rel="icon" href="data:,">
 <style>
 body {
   font-family: sans-serif;
+  margin: 20px;
+  background-color: #f4f4f4;
+  color: #333;
 }
-
+h1 {
+  text-align: center;
+  color: #0056b3;
+  margin-bottom: 20px;
+}
+#controls {
+  text-align: center;
+  margin-bottom: 20px;
+}
+button {
+  padding: 10px 20px;
+  font-size: 1em;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover {
+  background-color: #0056b3;
+}
 #container {
   display: flex;
-  justify-content: space-around; 
-  align-items: flex-start; /* Align items to the top of the container */
-  padding: 20px;
+  justify-content: space-around;
+  align-items: flex-start;
+  gap: 20px;
 }
-
 .video-section {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 10px;
+  background-color: #fff;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
-
 #right-section {
   display: flex;
   flex-direction: column;
+  gap: 20px;
 }
-
-#camera-section { /* New style for camera preview section */
-  align-self: center; /* Center this section vertically within the container */
-}
-
 video, canvas {
-  width: 640; 
-  height: 360; 
+  width: 640px;
+  height: 360px;
   border: 1px solid #ccc;
-  margin-bottom: 5px;
+  background-color: #000;
+  margin-bottom: 8px;
+  border-radius: 4px;
 }
-
+#cameraPreview {
+    transform: scaleX(-1);
+}
 .label {
   font-size: 14px;
   color: #666;
+  text-align: center;
 }
 </style>
 </head>
 <body>
-  <button id="startButton">Start Webcam</button>
-    <div id="container">
-      <div id="camera-section" class="video-section"> 
-        <video id="cameraPreview" width="640" height="360" autoplay></video>
-        <div class="label">Camera Preview</div>
-      </div>
-
-      <div id="right-section">
-        <div class="video-section">
-          <canvas id="decodedPreview1" width="640" height="360"></canvas>
-          <div class="label">Temporal Layers {1, 2, 3}</div>
-        </div>
-        <div class="video-section">
-          <canvas id="decodedPreview2" width="640" height="360"></canvas>
-          <div class="label">Temporal Layers {1, 2}</div>
-        </div>
-        <div class="video-section">
-          <canvas id="decodedPreview3" width="640" height="360"></canvas>
-          <div class="label">Temporal Layers 1</div>
-        </div>
-      </div>
+  <h1>WebCodecs Manual Scalability Demo</h1>
+  <div id="controls">
+    <button id="startButton">Start Webcam</button>
+  </div>
+  <div id="container">
+    <div id="camera-section" class="video-section">
+      <video id="cameraPreview" autoplay muted playsinline></video>
+      <div class="label">Camera Preview</div>
     </div>
 
-  <script>
-    const startButton = document.getElementById('startButton');
-    const cameraPreview = document.getElementById('cameraPreview');
-    const decodedPreviews = [
-      document.getElementById('decodedPreview1'),
-      document.getElementById('decodedPreview2'),
-      document.getElementById('decodedPreview3')
-    ];
-    let mediaStream;
-    let reader;
-    const frameDataMap = new Map();
+    <div id="right-section">
+      <div class="video-section">
+        <canvas id="decodedPreview1"></canvas>
+        <div class="label">Temporal Layers {0, 1, 2}</div>
+      </div>
+      <div class="video-section">
+        <canvas id="decodedPreview2"></canvas>
+        <div class="label">Temporal Layers {0, 1}</div>
+      </div>
+      <div class="video-section">
+        <canvas id="decodedPreview3"></canvas>
+        <div class="label">Temporal Layer 0</div>
+      </div>
+    </div>
+  </div>
 
-    // Single encoder and array to hold decoders
-    let videoEncoder;
-    const videoDecoders = [];
-    const codec_type = 'av01.0.04M.08';
+    <script>
 
+      /**
 
-    startButton.addEventListener('click', async () => {
-      if (startButton.textContent === "Start Webcam") {
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 360 } });
-          cameraPreview.srcObject = mediaStream;
+       * @fileoverview This demo showcases manual scalability with WebCodecs using AV1.
 
-          const track = mediaStream.getVideoTracks()[0];
-          const settings = track.getSettings();
+       * It encodes a webcam stream into three temporal layers and displays them
 
-          cameraPreview.width = settings.width;
-          cameraPreview.height = settings.height;
+       * in separate canvas elements, showing the effect of dropping higher layers.
 
-          // Create and configure the single encoder
-          videoEncoder = new VideoEncoder({
-            output: async (chunk) => {
-              // Decode the chunk with each decoder
-              for (const decoder of videoDecoders) {
-                decoder.decode(chunk);
-              }
-            },
-            error: (e) => console.error('Encoder error:', e)
-          });
+       */
 
-          // Create and configure the three decoders
-          for (let i = 0; i < 3; i++) {
-            const videoDecoder = new VideoDecoder({
-              output: async (frame) => {
-                const timestamp = frame.timestamp;
-                  const frameData = frameDataMap.get(timestamp);
-                  if (frameData) {
-                    // console.log("Retrieved frame data:", frameData);
+  
 
-                    const displayedTemporalIndex = 2 - i;
-                    if (frameData.temporalIndex <= displayedTemporalIndex) {
-                      const ctx = decodedPreviews[i].getContext('2d');
-                      await ctx.drawImage(frame, 0, 0);
-                    }
-                    if (i == 0) {
-                      for (const [key, value] of frameDataMap) {
-                        if (key < timestamp) {
-                          // Old entry, remove.
-                          frameDataMap.delete(key);
-                        }
-                      }
-                    }
-                  }
+      const startButton = document.getElementById('startButton');
 
-                  frame.close();
-              },
-              error: (e) => console.error('Decoder error:', e)
+      const cameraPreview = document.getElementById('cameraPreview');
+
+      const decodedPreviews = [
+
+        document.getElementById('decodedPreview1'),
+
+        document.getElementById('decodedPreview2'),
+
+        document.getElementById('decodedPreview3')
+
+      ];
+
+      let mediaStream;
+
+      let reader;
+
+      const frameDataMap = new Map(); // Maps timestamp to { temporalIndex }
+
+  
+
+      let videoEncoder;
+
+      const videoDecoders = [];
+
+      const CODEC_TYPE = 'av01.0.04M.08';
+
+      const VIDEO_WIDTH = 640;
+
+      const VIDEO_HEIGHT = 360;
+
+      const QP = 42;
+
+  
+
+      /**
+
+       * Handles the start/stop button click event.
+
+       */
+
+      startButton.addEventListener('click', async () => {
+
+        if (startButton.textContent === "Start Webcam") {
+
+          try {
+
+            startButton.disabled = true;
+
+            mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT } });
+
+            cameraPreview.srcObject = mediaStream;
+
+            await cameraPreview.play();
+
+  
+
+            const track = mediaStream.getVideoTracks()[0];
+
+            const settings = track.getSettings();
+
+  
+
+            cameraPreview.width = settings.width;
+
+            cameraPreview.height = settings.height;
+
+            decodedPreviews.forEach(canvas => {
+
+              canvas.width = settings.width;
+
+              canvas.height = settings.height;
+
             });
 
-            videoDecoders.push(videoDecoder);
+  
 
-          let config = {
-            codec: codec_type,
-            width: settings.width,
-            height: settings.height,
-            framerate: settings.frameRate
-          };
-            const decoder_support = await VideoDecoder.isConfigSupported(config);
-            if (decoder_support.supported) {
-              await videoDecoder.configure(config);
-            } else {
-              console.error(`${codec_type} decoder not supported`);
-              return;
-            }
+            await setupWebCodecs(settings);
+
+  
+
+            const processor = new MediaStreamTrackProcessor(track);
+
+            reader = processor.readable.getReader();
+
+            startButton.textContent = "Stop Camera";
+
+            startButton.disabled = false;
+
+  
+
+            processFrames(); // Start the frame processing loop
+
+          } catch (e) {
+
+            console.error('Error accessing webcam or setting up WebCodecs:', e);
+
+            alert('Failed to start webcam. Check permissions and console for errors.');
+
+            startButton.disabled = false;
+
           }
 
-          let config = {
-            codec: codec_type,
-            width: settings.width,
-            height: settings.height,
-            framerate: settings.frameRate,
-            bitrateMode: 'quantizer',
-            scalabilityMode: 'manual',
-            latencyMode: 'realtime',
-            acceleration: 'prefer-software',
-          };
+        } else {
 
-          const encoder_support = await VideoEncoder.isConfigSupported(config);
+          await stopWebCodecs();
+
+        }
+
+      });
+
+  
+
+      /**
+
+       * Sets up the VideoEncoder and VideoDecoders.
+
+       * @param {MediaTrackSettings} settings - The video track settings.
+
+       */
+
+      async function setupWebCodecs(settings) {
+
+        // Create and configure the single encoder
+
+        videoEncoder = new VideoEncoder({
+
+          output: handleEncoderOutput,
+
+          error: (e) => console.error('Encoder error:', e)
+
+        });
+
+  
+
+        const encoderConfig = {
+
+          codec: CODEC_TYPE,
+
+          width: settings.width,
+
+          height: settings.height,
+
+          framerate: settings.frameRate,
+
+          bitrateMode: 'quantizer',
+
+          scalabilityMode: 'manual',
+
+          latencyMode: 'realtime',
+
+          acceleration: 'prefer-software',
+
+        };
+
+  
+
+        try {
+
+          const encoder_support = await VideoEncoder.isConfigSupported(encoderConfig);
+
           if (encoder_support.supported) {
-            await videoEncoder.configure(config);
+
+            await videoEncoder.configure(encoderConfig);
+
           } else {
-            console.error(`${codec_type} encoder not supported`);
-            return;
+
+            throw new Error(`${CODEC_TYPE} encoder configuration not supported`);
+
           }
-
-          const processor = new MediaStreamTrackProcessor(track);
-          reader = processor.readable.getReader();
-
-          startButton.textContent = "Stop Camera";
-
-          (async function processFrames() {
-            const buffers = videoEncoder.getAllFrameBuffers();
-            let index = 0;
-            while (true) {
-              const { value: frame, done } = await reader.read();
-              if (done) break;
-
-              const ti = index % 4;
-
-              const timestamp = frame.timestamp;
-              frameDataMap.set(timestamp, {
-                isKeyFrame: (index == 0),
-                temporalIndex: ti
-              });
-
-              let encode_options = {
-                keyFrame: (index == 0),
-                av1: {quantizer: 42},
-                referenceBuffers: []
-              };
-
-              if (ti == 0) {
-                encode_options.updateBuffer = buffers[0];
-                encode_options.referenceBuffers = [buffers[0]];
-              } else if (ti == 1) {
-                encode_options.referenceBuffers = [buffers[0]];
-              } else if (ti == 2) {
-                encode_options.updateBuffer = buffers[1];
-                encode_options.referenceBuffers = [buffers[0]];
-              } else if (ti == 3) {
-                encode_options.referenceBuffers = [buffers[1], buffers[0]];
-              } else {
-                alert("nah");
-              }
-
-              await videoEncoder.encode(frame, encode_options);
-
-              frame.close();
-              index++;
-            }
-          })();
 
         } catch (e) {
-          console.error('Error accessing webcam:', e);
+
+          console.error('Encoder config error:', e);
+
+          throw e;
+
         }
-      } else {
-        reader.cancel(); // Stop reading frames
-        
-        // Close encoders and decoders
-        videoEncoder.close();
+
+  
+
+        // Create and configure the three decoders
+
+        for (let i = 0; i < 3; i++) {
+
+          const decoderIndex = i;
+
+          const videoDecoder = new VideoDecoder({
+
+            output: (frame) => handleDecoderOutput(frame, decoderIndex),
+
+            error: (e) => console.error(`Decoder ${decoderIndex} error:`, e)
+
+          });
+
+  
+
+          const decoderConfig = {
+
+            codec: CODEC_TYPE,
+
+            width: settings.width,
+
+            height: settings.height,
+
+            framerate: settings.frameRate
+
+          };
+
+  
+
+          try {
+
+            const decoder_support = await VideoDecoder.isConfigSupported(decoderConfig);
+
+            if (decoder_support.supported) {
+
+              await videoDecoder.configure(decoderConfig);
+
+              videoDecoders.push(videoDecoder);
+
+            } else {
+
+              throw new Error(`${CODEC_TYPE} decoder configuration not supported`);
+
+            }
+
+          } catch (e) {
+
+            console.error(`Decoder ${decoderIndex} config error:`, e);
+
+            // Clean up already created decoders
+
+            for (const dec of videoDecoders) dec.close();
+
+            videoDecoders.length = 0;
+
+            if (videoEncoder) videoEncoder.close();
+
+            throw e;
+
+          }
+
+        }
+
+      }
+
+  
+
+      /**
+
+       * Handles the output from the VideoEncoder.
+
+       * @param {EncodedVideoChunk} chunk - The encoded video chunk.
+
+       */
+
+      function handleEncoderOutput(chunk) {
+
+        // Decode the chunk with each decoder
+
         for (const decoder of videoDecoders) {
-          decoder.close();
+
+          if (decoder.state === 'configured') {
+
+            decoder.decode(chunk);
+
+          }
+
         }
+
+      }
+
+  
+
+      /**
+
+       * Handles the output from a VideoDecoder.
+
+       * @param {VideoFrame} frame - The decoded video frame.
+
+       * @param {number} decoderIndex - The index of the decoder that outputted the frame.
+
+       */
+
+      async function handleDecoderOutput(frame, decoderIndex) {
+
+        const timestamp = frame.timestamp;
+
+        const frameData = frameDataMap.get(timestamp);
+
+  
+
+        if (frameData) {
+
+          const maxTemporalIndex = 2 - decoderIndex;
+
+          if (frameData.temporalIndex <= maxTemporalIndex) {
+
+            try {
+
+              const ctx = decodedPreviews[decoderIndex].getContext('2d');
+
+              await ctx.drawImage(frame, 0, 0);
+
+            } catch (e) {
+
+              console.error(`Error drawing frame in decoder ${decoderIndex}:`, e);
+
+                      }
+
+                    }
+
+                  }
+
+            
+
+                  // Clean up map entries older than the current frame from the first decoder
+
+        if (decoderIndex === 0) {
+
+          frameDataMap.forEach((value, key) => {
+
+            if (key < timestamp) {
+
+              frameDataMap.delete(key);
+
+            }
+
+          });
+
+        }
+
+  
+
+        frame.close();
+
+      }
+
+  
+
+      /**
+
+       * The main loop to read frames from the camera and encode them.
+
+       */
+
+      async function processFrames() {
+
+        try {
+
+          const buffers = await videoEncoder.getAllFrameBuffers();
+
+          if (buffers.length < 2) {
+
+            throw new Error(`Expected at least 2 frame buffers, got ${buffers.length}`);
+
+          }
+
+          let frameIndex = 0;
+
+  
+
+          while (startButton.textContent === "Stop Camera") {
+
+            const { value: frame, done } = await reader.read();
+
+            if (done) break;
+
+  
+
+            // Temporal layer structure: 0-1-2-1
+
+            const temporalIndex = [0, 1, 2, 1][frameIndex % 4];
+
+            const isKeyFrame = (frameIndex === 0);
+
+  
+
+            frameDataMap.set(frame.timestamp, { temporalIndex });
+
+  
+
+            let encodeOptions = {
+
+              keyFrame: isKeyFrame,
+
+              av1: { quantizer: QP },
+
+            };
+
+  
+
+            // Manual reference buffer management for temporal layers
+
+            switch (temporalIndex) {
+
+              case 0: // Base layer, updates buffer 0, references only itself (or none if keyframe)
+
+                encodeOptions.updateBuffer = buffers[0];
+
+                encodeOptions.referenceBuffers = isKeyFrame ? [] : [buffers[0]];
+
+                break;
+
+              case 1: // Middle layer, references buffer 0
+
+                encodeOptions.referenceBuffers = [buffers[0]];
+
+                break;
+
+              case 2: // Top layer, updates buffer 1, references buffer 0
+
+                encodeOptions.updateBuffer = buffers[1];
+
+                encodeOptions.referenceBuffers = [buffers[0]];
+
+                break;
+
+            }
+
+  
+
+            if (videoEncoder.state === 'configured') {
+
+              await videoEncoder.encode(frame, encodeOptions);
+
+            } else {
+
+              console.warn("Encoder not configured, skipping encode");
+
+            }
+
+            frame.close();
+
+            frameIndex++;
+
+          }
+
+        } catch (e) {
+
+          console.error("Error in processFrames:", e);
+
+          await stopWebCodecs();
+
+        }
+
+      }
+
+  
+
+      /**
+
+       * Stops the webcam and closes down WebCodecs encoder and decoders.
+
+       */
+
+      async function stopWebCodecs() {
+
+        if (reader) {
+
+          try {
+
+            await reader.cancel();
+
+          } catch (e) { console.warn("Error cancelling reader:", e) }
+
+          reader = null;
+
+        }
+
+  
+
+        if (videoEncoder && videoEncoder.state !== 'closed') {
+
+          try { await videoEncoder.close(); } catch (e) { console.error("Error closing encoder:", e); }
+
+          videoEncoder = null;
+
+        }
+
+  
+
+        for (const decoder of videoDecoders) {
+
+          if (decoder.state !== 'closed') {
+
+            try { await decoder.close(); } catch (e) { console.error("Error closing decoder:", e); }
+
+          }
+
+        }
+
         videoDecoders.length = 0;
 
-        // Stop the media stream and reset video elements
-        mediaStream.getTracks().forEach(track => track.stop());
-        cameraPreview.srcObject = null;
-        for (const preview of decodedPreviews) {
-            preview.getContext('2d').clearRect(0, 0, preview.width, preview.height);
+  
+
+        if (mediaStream) {
+
+          mediaStream.getTracks().forEach(track => track.stop());
+
+          mediaStream = null;
+
         }
-        
-        startButton.textContent = "Start Webcam"; // Reset button text
+
+        cameraPreview.srcObject = null;
+
+        for (const preview of decodedPreviews) {
+
+          const ctx = preview.getContext('2d');
+
+          ctx.clearRect(0, 0, preview.width, preview.height);
+
+        }
+
+  
+
+        frameDataMap.clear();
+
+        startButton.textContent = "Start Webcam";
+
+        startButton.disabled = false;
+
       }
-    });
-  </script>
-</body>
-</html>
+
+    </script>
+
+  </body>
+
+  </html>
