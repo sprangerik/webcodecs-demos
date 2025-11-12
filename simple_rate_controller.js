@@ -378,14 +378,14 @@ class SimpleRateController {
                     triggerReencode = true;
                     reason = "overshoot";
                 } else {
-                    console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
+                    // console.log(`Overshoot detected, but QP already at max (${this.maxQp})`);
                 }
             } else if (this.reencodeUndershootPercent > 0 && deviationPercent < -this.reencodeUndershootPercent) {
                 if (qp > this.minQp) {
                     triggerReencode = true;
                     reason = "undershoot";
                 } else {
-                    console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
+                    // console.log(`Undershoot detected, but QP already at min (${this.minQp})`);
                 }
             }
         }
@@ -431,7 +431,7 @@ class SimpleRateController {
             
             nextQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
             if (qp !== nextQp) {
-                console.log(`Re-encode ${this.reEncodeContext.count}/${this.maxReencodeCount} (${reason}): size ${encodedSizeBits} bits, target: ${targetFrameSizeBits} bits => updating QP from ${qp} to ${nextQp}.`);
+                // console.log(`Re-encode ${this.reEncodeContext.count}/${this.maxReencodeCount} (${reason}): size ${encodedSizeBits} bits, target: ${targetFrameSizeBits} bits => updating QP from ${qp} to ${nextQp}.`);
                 return { reencode: true, qp: nextQp };
             } else if (encodedSizeBits > targetFrameSizeBits) {
                 // Overshoot after converging upper/lower bound.
@@ -441,9 +441,9 @@ class SimpleRateController {
         } 
         if (this.maxReencodeCount > 0) {
             if (!this._canReEncode()) {
-                console.log('Cannot reencode.');
+                // console.log('Cannot reencode.');
             } else {
-                console.log('reached target bracket.');
+                // console.log('reached target bracket.');
             }
         }
         // Frame size is acceptable or max re-encodes reached

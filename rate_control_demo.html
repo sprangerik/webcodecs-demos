@@ -597,7 +597,7 @@
 
         function encoderOutput(chunk, meta, instanceId) {
             if (instanceId !== encoderInstanceId) {
-                console.log(`encoderOutput: Stale call from instance ${instanceId}, current is ${encoderInstanceId}. Ignoring chunk type ${chunk.type}.`);
+                // console.log(`encoderOutput: Stale call from instance ${instanceId}, current is ${encoderInstanceId}. Ignoring chunk type ${chunk.type}.`);
                 return; // This output is from a previous encoder instance
             }
 
@@ -605,7 +605,7 @@
 
             if (rateControlModeSelect.value !== 'external' && rateController) {
                 // Stale call from a previous encoder instance
-                console.warn("encoderOutput called for non-external mode, ignoring.");
+                // console.warn("encoderOutput called for non-external mode, ignoring.");
                 if (currentFrame) {
                     // currentFrame.close(); // This is likely closed by the new encoder's pipeline
                     // currentFrame = null;
@@ -630,7 +630,7 @@
                 encodeCount++;
                 const encodeOptions = getEncodeOptions(inputFrameIndex - 1, false, reEncodeInfo.qp);
                 currentQpUsed = reEncodeInfo.qp;
-                console.log(`[Inst ${instanceId}] Re-encoding frame ${inputFrameIndex - 1}, count: ${encodeCount}`);
+                // console.log(`[Inst ${instanceId}] Re-encoding frame ${inputFrameIndex - 1}, count: ${encodeCount}`);
                 encoder.encode(currentFrame, encodeOptions);
             } else {
                 frameSizeData.push({ size: chunk.byteLength, timestamp: now });
@@ -653,18 +653,18 @@
                 if (decoder && decoder.state === 'configured') {
                     if (decoderNeedsKeyFrame) {
                         if (encodedFrame.encodedChunk.type === 'key') {
-                            console.log(`[Inst ${instanceId}] Decoding keyframe ${frameIdCounter}`);
+                            // console.log(`[Inst ${instanceId}] Decoding keyframe ${frameIdCounter}`);
                             decoder.decode(encodedFrame.encodedChunk);
                             decoderNeedsKeyFrame = false;
                         } else {
-                            console.log(`[Inst ${instanceId}] Skipping non-keyframe ${frameIdCounter}, keyframe needed.`);
+                            // console.log(`[Inst ${instanceId}] Skipping non-keyframe ${frameIdCounter}, keyframe needed.`);
                         }
                     } else {
                         // console.log(`[Inst ${instanceId}] Decoding frame ${frameIdCounter}`);
                         decoder.decode(encodedFrame.encodedChunk);
                     }
                 } else {
-                    console.warn(`[Inst ${instanceId}] Decoder not ready, state: ${decoder ? decoder.state : 'null'}`);
+                    // console.warn(`[Inst ${instanceId}] Decoder not ready, state: ${decoder ? decoder.state : 'null'}`);
                 }
 
                 if (currentFrame) {
@@ -765,13 +765,13 @@
 
             encoderInstanceId++;
             const currentInstanceId = encoderInstanceId;
-            console.log(`startEncoding: Creating encoder instance ${currentInstanceId}`);
+            // console.log(`startEncoding: Creating encoder instance ${currentInstanceId}`);
             encoder = new VideoEncoder({ 
                 output: (chunk, meta) => encoderOutput(chunk, meta, currentInstanceId), 
                 error: encoderError 
             });
             await encoder.configure(encoderConfig);
-            console.log(`startEncoding: Encoder instance ${currentInstanceId} configured`);
+            // console.log(`startEncoding: Encoder instance ${currentInstanceId} configured`);
             buffers = encoderConfig.scalabilityMode === "manual" ? await encoder.getAllFrameBuffers() : [];
 
             decoder = new VideoDecoder({
@@ -788,7 +788,7 @@
             const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
             await decoder.configure(decoderConfig);
             decoderNeedsKeyFrame = true;
-            console.log(`startEncoding: Decoder configured, needsKeyFrame: ${decoderNeedsKeyFrame}`);
+            // console.log(`startEncoding: Decoder configured, needsKeyFrame: ${decoderNeedsKeyFrame}`);
 
             frameSizeData = [];
             graphData = [];
@@ -890,11 +890,11 @@
 
         rateControlModeSelect.addEventListener('change', async () => {
             const mode = rateControlModeSelect.value;
-            console.log(`Switching to ${mode} mode`);
+            // console.log(`Switching to ${mode} mode`);
 
             stopButton.disabled = true;
             if (frameReader) {
-                 console.log("Cancelling frame reader");
+                 // console.log("Cancelling frame reader");
                 try {
                     await frameReader.cancel();
                     frameReader.releaseLock();
@@ -916,7 +916,7 @@
                 }
 
                 if (decoder && decoder.state === 'configured') {
-                    console.log("Resetting decoder");
+                    // console.log("Resetting decoder");
                     decoder.reset();
                 }
                 
@@ -928,7 +928,7 @@
                 encodeCount = 0;
                 currentFrame = null;
                 if (rateController) {
-                    console.log("Resetting reencode context in rateController");
+                    // console.log("Resetting reencode context in rateController");
                     rateController._resetReencodeContext();
                 }
                  if (mode === 'internal') {
@@ -936,7 +936,7 @@
                  }
 
                 if (encoder && encoder.state !== 'closed') {
-                    console.log("Closing old encoder");
+                    // console.log("Closing old encoder");
                     try {
                         encoder.close();
                     } catch (e) { console.warn("Error closing old encoder:", e); }
@@ -946,19 +946,19 @@
                 const encoderConfig = getEncoderConfig();
                 encoderInstanceId++;
                 const currentInstanceId = encoderInstanceId;
-                console.log(`Creating new encoder instance ${currentInstanceId}`);
+                // console.log(`Creating new encoder instance ${currentInstanceId}`);
                 encoder = new VideoEncoder({
                     output: (chunk, meta) => encoderOutput(chunk, meta, currentInstanceId), 
                     error: encoderError
                 });
                 await encoder.configure(encoderConfig);
-                console.log(`Encoder instance ${currentInstanceId} configured`);
+                // console.log(`Encoder instance ${currentInstanceId} configured`);
 
                 if (decoder && decoder.state !== 'closed') {
                     const decoderConfig = getDecoderConfig(encoderConfig, lastEncodedDescription);
-                    console.log("Reconfiguring decoder");
+                    // console.log("Reconfiguring decoder");
                     await decoder.configure(decoderConfig);
-                    console.log("Decoder reconfigured");
+                    // console.log("Decoder reconfigured");
                 } else if (!decoder) {
                      console.error("Decoder is null, cannot reconfigure");
                 }
@@ -970,7 +970,7 @@
                 } else {
                     buffers = [];
                 }
-                console.log(`Mode change complete. needsKeyFrame: ${needsKeyFrame}, decoderNeedsKeyFrame: ${decoderNeedsKeyFrame}`);
+                // console.log(`Mode change complete. needsKeyFrame: ${needsKeyFrame}, decoderNeedsKeyFrame: ${decoderNeedsKeyFrame}`);
 
                 if (mediaStream) {
                     const track = mediaStream.getVideoTracks()[0];
