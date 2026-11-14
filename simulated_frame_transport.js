@@ -17,10 +17,26 @@ class SimulatedFrameTransport {
         this.lossPercent = lossPercent;
         this.bandwidthBps = 1000000; // Default 1 Mbps
         this.isRunning = true;
-        this.queue = []; // This queue is not currently used, consider removal or implementation.
         this.nextAvailableSendTime = performance.now(); // Time when the transport is free for the next send.
         this.nextAvailableReturnTime = performance.now(); // Time when the return path is free.
         this.ltrController = ltrController;
+        this._timers = new Set();
+    }
+
+    /**
+     * Schedules a timeout tracked for cleanup on Stop().
+     * @param {function(): void} fn - Callback to run.
+     * @param {number} delayMs - Delay in milliseconds.
+     * @private
+     */
+    _schedule(fn, delayMs) {
+        const id = setTimeout(() => {
+            this._timers.delete(id);
+            if (this.isRunning) {
+                fn();
+            }
+        }, delayMs);
+        this._timers.add(id);
     }
 
     /**
@@ -28,7 +44,7 @@ class SimulatedFrameTransport {
      * @param {number} bandwidthBps - Bandwidth in bits per second.
      */
     SetRate(bandwidthBps) {
-        this.bandwidthBps = bandwidthBps;
+        this.bandwidthBps = Math.max(1, bandwidthBps);
     }
 
     /**
@@ -36,7 +52,7 @@ class SimulatedFrameTransport {
      * @param {number} rttDelayMs - RTT in milliseconds.
      */
     SetRttDelay(rttDelayMs) {
-        this.rttDelayMs = rttDelayMs;
+        this.rttDelayMs = Math.max(0, rttDelayMs);
     }
 
     /**
@@ -44,7 +60,7 @@ class SimulatedFrameTransport {
      * @param {number} lossPercent - Loss percentage (0-100).
      */
     SetLossPercent(lossPercent) {
-        this.lossPercent = lossPercent;
+        this.lossPercent = Math.max(0, Math.min(100, lossPercent));
     }
 
     /**
@@ -72,30 +88,20 @@ class SimulatedFrameTransport {
         // This includes any queuing delay, transmission time, and half the RTT (one-way delay).
         const deliveryDelayMs = (earliestSendTime - now) + transmissionTimeMs + (this.rttDelayMs / 2);
 
-        // console.log(`SimTransport: SendFrame ts: ${encodedFrame.timestamp}, size: ${encodedFrame.encodedChunk.byteLength}, transTime: ${transmissionTimeMs.toFixed(1)}, rtt/2: ${this.rttDelayMs / 2}, totalDelay: ${deliveryDelayMs.toFixed(1)}`);
-
-        setTimeout(() => {
-            if (!this.isRunning) return;
-
+        this._schedule(() => {
             // Simulate packet loss.
             const shouldDrop = Math.random() * 100 < this.lossPercent;
             if (shouldDrop) {
-                // console.log(`SimTransport: Dropping frame ts: ${encodedFrame.timestamp} (ID: ${encodedFrame.frameId})`);
-                
                 // Simplified Retransmission Simulation:
                 // Assume a NACK is received after RTT/2, and retransmission starts.
-                // This doesn't model complex scenarios like NACK aggregation or backoff.
                 const nowAfterDrop = performance.now();
                 const earliestReturnTime = Math.max(nowAfterDrop, this.nextAvailableReturnTime);
-                const returnTripDelay = (this.rttDelayMs / 2);
+                const returnTripDelay = this.rttDelayMs / 2;
                 this.nextAvailableReturnTime = earliestReturnTime + returnTripDelay;
                 const retransmitDelay = (earliestReturnTime - nowAfterDrop) + returnTripDelay;
 
-                setTimeout(() => {
-                    if (this.isRunning) {
-                        // console.log(`SimTransport: Retransmitting frame ts: ${encodedFrame.timestamp} (ID: ${encodedFrame.frameId})`);
-                        this.SendFrame(encodedFrame, meta); // Re-queue the frame.
-                    }
+                this._schedule(() => {
+                    this.SendFrame(encodedFrame, meta); // Re-queue the frame.
                 }, retransmitDelay);
             } else {
                 // Frame successfully delivered.
@@ -105,10 +111,8 @@ class SimulatedFrameTransport {
                 // If it's an LTR frame and an LTR controller is present, simulate an ACK.
                 if (encodedFrame.isLtr && this.ltrController) {
                     const ackDelay = this.rttDelayMs / 2; // ACK travels back in RTT/2.
-                    // console.log(`SimTransport: Scheduling ACK for LTR frame ${encodedFrame.frameId} in ${ackDelay}ms`);
-                    setTimeout(() => {
-                        if (this.isRunning) {
-                            // console.log(`SimTransport: Sending ACK for LTR frame ${encodedFrame.frameId} to controller`);
+                    this._schedule(() => {
+                        if (this.ltrController) {
                             this.ltrController.OnReceivedLtrAck(encodedFrame.frameId);
                         }
                     }, ackDelay);
@@ -118,11 +122,24 @@ class SimulatedFrameTransport {
     }
 
     /**
-     * Stops the transport simulation. No more frames will be processed or scheduled.
+     * Drops any frames and ACKs currently in flight without stopping the transport
+     * (e.g. when reconfiguring the pipeline to a different codec).
+     */
+    ClearPending() {
+        for (const id of this._timers) {
+            clearTimeout(id);
+        }
+        this._timers.clear();
+        const now = performance.now();
+        this.nextAvailableSendTime = now;
+        this.nextAvailableReturnTime = now;
+    }
+
+    /**
+     * Stops the transport simulation and cancels all pending timers.
      */
     Stop() {
         this.isRunning = false;
-        // Clear any pending timeouts? (Potentially many)
-        // For simplicity in this demo, we are not clearing timeouts, they will just not execute the main logic.
+        this.ClearPending();
     }
 }

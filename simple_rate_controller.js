@@ -241,11 +241,9 @@ class SimpleRateController {
         let lowerSizeRatio = -1, upperSizeRatio = -1;
         let lowerQpChange = -1, upperQpChange = -1;
 
-        // Iterate through the map to find the bounding ratios and QP changes
-        // The map is sorted by sizeRatioChange (ascending)
-        const sortedEntries = Array.from(this._qpDiffToSizeRatioMap.entries()).sort((a, b) => a[0] - b[0]);
-
-        for (const [mapSizeRatio, mapQpChange] of sortedEntries) {
+        // Iterate through the map (already ordered ascending by sizeRatioChange)
+        // to find the bounding ratios and QP changes.
+        for (const [mapSizeRatio, mapQpChange] of this._qpDiffToSizeRatioMap) {
             if (mapSizeRatio <= sizeRatioChange) {
                 lowerSizeRatio = mapSizeRatio;
                 lowerQpChange = mapQpChange;
@@ -400,7 +398,7 @@ class SimpleRateController {
         // Clamp QP to the allowed min/max range.
         nextQp = Math.max(this.minQp, Math.min(this.maxQp, nextQp));
 
-        // Apply a small QP boost for key frames to ensure they are higher quality.
+        // Increase QP slightly on key frames to keep their encoded size bounded.
         let qpToDither = isKeyFrame ? Math.min(this.maxQp, nextQp + 5) : nextQp;
 
         // Dither the final QP value.
