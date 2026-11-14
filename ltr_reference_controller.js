@@ -11,11 +11,11 @@ class LtrReferenceController {
      * @throws {Error} if the number of available buffers is less than 2.
      */
     constructor(buffers) {
-        if (buffers.length < 2) {
-            throw new Error(`LtrReferenceController requires at least 2 buffers, but got ${buffers.length}`);
+        if (!buffers || buffers.length < 2) {
+            throw new Error(`LtrReferenceController requires at least 2 buffers, but got ${buffers ? buffers.length : 0}`);
         }
         this.availableBuffers = buffers;
-        // We only use the first two buffers for this demo's LTR logic.
+        // We use the first two buffers for ping-pong LTR updates.
         this.buffers = [
             { state: 'unused', frameId: -1, buffer: this.availableBuffers[0] }, // Buffer 0
             { state: 'unused', frameId: -1, buffer: this.availableBuffers[1] }  // Buffer 1
@@ -27,12 +27,14 @@ class LtrReferenceController {
      * Determines the encode options for the next frame, including LTR settings.
      * @param {boolean} needsKeyFrame - Whether a key frame is required.
      * @param {number} frameId - The unique identifier for the current frame.
-     * @returns {{encodeOptions: object, isLtr: boolean}} - The encoder options and a flag indicating if this frame is an LTR frame.
+     * @returns {{encodeOptions: object, isLtr: boolean, referenceFrameIds: Array<number>}}
+     *   The encoder options, whether this frame is an LTR frame, and the exact referenced frame IDs.
      */
     GetNextEncodeOptions(needsKeyFrame, frameId) {
-        const isKey = needsKeyFrame;
-        let encodeOptions = { keyFrame: isKey };
+        const isKey = Boolean(needsKeyFrame);
+        const encodeOptions = { keyFrame: isKey };
         let isLtr = false;
+        let referenceFrameIds = [];
 
         if (isKey) {
             // On a keyframe, use buffer 0 for the new LTR frame.
@@ -44,11 +46,11 @@ class LtrReferenceController {
             encodeOptions.referenceBuffers = []; // Keyframes have no references
             encodeOptions.updateBuffer = this.buffers[0].buffer;
             this.pendingLtrFrameId = -1; // No LTR pending after a keyframe
-            // console.log(`LTR: KeyFrame ${frameId}, using buffer 0`);
         } else {
             // For delta frames, reference all currently 'good' buffers.
             const goodBuffers = this.buffers.filter(b => b.state === 'good');
             encodeOptions.referenceBuffers = goodBuffers.map(b => b.buffer);
+            referenceFrameIds = goodBuffers.map(b => b.frameId);
 
             // Check if we can mark this frame as a new LTR frame.
             // This requires an 'unused' buffer and no other LTR frame pending acknowledgment.
@@ -60,14 +62,10 @@ class LtrReferenceController {
                 bufferToUse.frameId = frameId;
                 this.pendingLtrFrameId = frameId;
                 encodeOptions.updateBuffer = bufferToUse.buffer;
-                // console.log(`LTR: DeltaFrame ${frameId}, marking as LTR, using buffer ${unusedBufferIndex}, refs: [${goodBuffers.map(b => this.availableBuffers.indexOf(b.buffer))}], pendingLtrFrameId: ${this.pendingLtrFrameId}`);
-            } else {
-                // Not producing a new LTR frame in this case.
-                // console.log(`LTR: DeltaFrame ${frameId}, NOT LTR, refs: [${goodBuffers.map(b => this.availableBuffers.indexOf(b.buffer))}]`);
             }
         }
 
-        return { encodeOptions, isLtr };
+        return { encodeOptions, isLtr, referenceFrameIds };
     }
 
     /**
@@ -75,7 +73,10 @@ class LtrReferenceController {
      * @param {number} frameId - The frameId of the ACKed LTR frame.
      */
     OnReceivedLtrAck(frameId) {
-        // console.log(`LTR: OnReceivedLtrAck for frameId: ${frameId}, pendingLtrFrameId: ${this.pendingLtrFrameId}`);
+        // Ignore stale ACKs from before a keyframe reset when nothing is pending.
+        if (this.pendingLtrFrameId === -1) {
+            return;
+        }
         if (frameId === this.pendingLtrFrameId) {
             const pendingIndex = this.buffers.findIndex(b => b.state === 'pending');
             if (pendingIndex !== -1) {
@@ -90,12 +91,7 @@ class LtrReferenceController {
                 // Mark the ACKed buffer as 'good'.
                 this.buffers[pendingIndex].state = 'good';
                 this.pendingLtrFrameId = -1;
-                // console.log(`LTR: ACK matches! Buffer ${pendingIndex} is now good. States: ${this.buffers.map(b => b.state)}`);
-            } else {
-                 console.warn(`LTR: ACK received for ${frameId}, but no buffer is pending!`);
             }
-        } else {
-            console.warn(`LTR: Received ACK for ${frameId}, but expected ${this.pendingLtrFrameId}`);
         }
     }
 

@@ -144,7 +144,7 @@ video, canvas {
 
       const VIDEO_HEIGHT = 360;
 
-      const QP = 42;
+      const QP = 168; // 42 * 4 in [0, 255] AV1 QIndex scale
 
   
 
@@ -264,7 +264,7 @@ video, canvas {
 
           latencyMode: 'realtime',
 
-          acceleration: 'prefer-software',
+          hardwareAcceleration: 'prefer-software',
 
         };
 
@@ -314,11 +314,9 @@ video, canvas {
 
             codec: CODEC_TYPE,
 
-            width: settings.width,
+            codedWidth: settings.width,
 
-            height: settings.height,
-
-            framerate: settings.frameRate
+            codedHeight: settings.height,
 
           };
 

@@ -13,6 +13,7 @@ class FrameAssembler {
         this.bufferedFrames = new Map(); // Stores EncodedFrame objects waiting for dependencies
         this.decoderNeedsKeyFrame = false; // Flag indicating the decoder requires a keyframe
         this.lastDecodedFrameId = -1;    // Highest frameId sent for decoding
+        this.lastKeyFrameId = -1;        // Most recent keyframe ID sent for decoding
     }
 
     /**
@@ -21,18 +22,21 @@ class FrameAssembler {
      * @param {EncodedFrame} encodedFrame - The received frame.
      */
     OnFrameReceived(encodedFrame) {
-        // console.log(`FrameAssembler: OnFrameReceived - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}], ts: ${encodedFrame.timestamp}`);
-        
-        // Discard old non-LTR frames. LTR frames might be retransmitted and useful even if older.
+        // Never process or buffer frames from before the most recent decoded keyframe,
+        // even retransmitted LTR frames, as the keyframe reset decoder reference slots.
+        if (encodedFrame.frameId < this.lastKeyFrameId) {
+            return;
+        }
+
+        // Discard old non-LTR frames. LTR frames within the current GOP may arrive via
+        // retransmission and are still useful to populate the decoder's LTR buffer.
         if (!encodedFrame.isLtr && encodedFrame.frameId <= this.lastDecodedFrameId) {
-            // console.warn(`FrameAssembler: Discarding old non-LTR frame ${encodedFrame.frameId}, last decoded was ${this.lastDecodedFrameId}`);
             return;
         }
 
         if (this._canDecode(encodedFrame)) {
             this._decodeAndProcess(encodedFrame);
         } else {
-            // console.log(`FrameAssembler: Buffering frame ${encodedFrame.frameId}`);
             this.bufferedFrames.set(encodedFrame.frameId, encodedFrame);
         }
     }
@@ -54,9 +58,25 @@ class FrameAssembler {
         if (encodedFrame.encodedChunk.type === 'key') {
             return true;
         }
-        const depsMet = encodedFrame.dependencies.every(depId => this.decodedFrames.has(depId));
-        // console.log(`FrameAssembler: _canDecode - frameId: ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, depsMet: ${depsMet}`);
-        return depsMet;
+        return encodedFrame.dependencies.every(depId => this.decodedFrames.has(depId));
+    }
+
+    /**
+     * Clears buffered and decoded state older than a newly decoded keyframe.
+     * @param {number} keyFrameId - The frameId of the decoded keyframe.
+     * @private
+     */
+    _clearOldState(keyFrameId) {
+        for (const bufferedId of this.bufferedFrames.keys()) {
+            if (bufferedId < keyFrameId) {
+                this.bufferedFrames.delete(bufferedId);
+            }
+        }
+        for (const decodedId of this.decodedFrames.keys()) {
+            if (decodedId < keyFrameId) {
+                this.decodedFrames.delete(decodedId);
+            }
+        }
     }
 
     /**
@@ -72,11 +92,15 @@ class FrameAssembler {
     _decodeAndProcess(encodedFrame) {
         // Only process if not already sent for decoding
         if (this.decodedFrames.has(encodedFrame.frameId)) {
-            // console.log(`FrameAssembler: Frame ${encodedFrame.frameId} already decoded`);
-            return; 
+            return;
         }
 
-        // console.log(`FrameAssembler: Decoding frame ${encodedFrame.frameId}, type: ${encodedFrame.encodedChunk.type}, dependencies: [${encodedFrame.dependencies}]`);
+        const isKeyFrame = encodedFrame.encodedChunk.type === 'key';
+        if (isKeyFrame) {
+            this.lastKeyFrameId = encodedFrame.frameId;
+            this._clearOldState(encodedFrame.frameId);
+        }
+
         this.onReadyToRenderCallback(encodedFrame); // This will trigger decoder.decode()
         this.decodedFrames.set(encodedFrame.frameId, true); // Mark as sent for decoding
         if (encodedFrame.frameId > this.lastDecodedFrameId) {
@@ -84,9 +108,8 @@ class FrameAssembler {
         }
         this.bufferedFrames.delete(encodedFrame.frameId); // Remove from buffer if it was there
 
-        if (encodedFrame.encodedChunk.type === 'key' && this.decoderNeedsKeyFrame) {
+        if (isKeyFrame && this.decoderNeedsKeyFrame) {
             this.decoderNeedsKeyFrame = false;
-            // console.log('FrameAssembler: Keyframe decoded, decoderNeedsKeyFrame is now false.');
         }
 
         // Check buffered frames that might now be decodable
@@ -106,8 +129,8 @@ class FrameAssembler {
     reset() {
         this.decodedFrames.clear();
         this.bufferedFrames.clear();
-        this.decoderNeedsKeyFrame = false; 
+        this.decoderNeedsKeyFrame = false;
         this.lastDecodedFrameId = -1;
-        // console.log("FrameAssembler: Reset complete.");
+        this.lastKeyFrameId = -1;
     }
 }

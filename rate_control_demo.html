@@ -624,9 +624,9 @@
 
             if (rateControlModeSelect.value === 'external') {
                 switch (codecType) {
-                    // AV1 uses full 0-255 QP range, but for simplicity just translate from the 0-63 assumed in this demo.
-                    case 'av1': encodeOptions.av1 = { quantizer: qp * 4}; break;
-                    case 'vp9': encodeOptions.vp9 = { quantizer: qp }; break;
+                    // AV1 and VP9 use the full 0-255 QIndex range in WebCodecs; translate from 0-63.
+                    case 'av1': encodeOptions.av1 = { quantizer: Math.min(255, qp * 4) }; break;
+                    case 'vp9': encodeOptions.vp9 = { quantizer: Math.min(255, qp * 4) }; break;
                     case 'vp8': encodeOptions.vp8 = { quantizer: qp }; break;
                     case 'avc': encodeOptions.avc = { quantizer: qp }; break;
                     case 'hevc': encodeOptions.hevc = { quantizer: qp }; break;
